@@ -1,0 +1,20 @@
+file(MAKE_DIRECTORY "${OUTPUT_DIR}")
+foreach(limit 0 4 1024)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env
+        PSYZ_HEADLESS=gpu SDL_AUDIO_DRIVER=dummy PSYZ_GPU_COMMAND_DESCRIPTOR_LIMIT=${limit}
+        "${TEST_BINARY}" --descriptor-gpu "${OUTPUT_DIR}/${limit}.rgb"
+        RESULT_VARIABLE result OUTPUT_VARIABLE log ERROR_VARIABLE errors TIMEOUT 55)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "Descriptor budget ${limit}: ${result}\n${log}\n${errors}")
+    endif()
+    if(NOT limit EQUAL 0 AND NOT "${log}${errors}" MATCHES "GPU descriptor batch rollover")
+        message(FATAL_ERROR "Descriptor budget ${limit} never exercised a command rollover")
+    endif()
+    file(SHA256 "${OUTPUT_DIR}/${limit}.rgb" hash)
+    if(limit EQUAL 0)
+        set(reference "${hash}")
+    elseif(NOT hash STREQUAL reference)
+        message(FATAL_ERROR "Descriptor budget ${limit} changed rendered pixels")
+    endif()
+endforeach()
+message(STATUS "Descriptor batch rollover preserves all pixels at x1, x2 and x8")

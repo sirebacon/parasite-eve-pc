@@ -320,7 +320,7 @@ static int original_player_turn(void)
     u32 old_flags=g_GameStateFlags;u8 old_count=g_BattleActionQueueCount,old_index=g_BattleActionIndex;
     u8 old_remaining=g_BattleRemainingActions,old_hit_timer=g_BattleHitTimer;
     u8 old_modes[4];memcpy(old_modes,g_BattleActionAnimModes,sizeof(old_modes));
-    int old_attack=g_BattleAttackPmSlot,old_impact=g_BattleImpactPmSlot;
+    int old_attack=g_BattleAttackPmSlot,old_impact=g_BattleImpactPmSlot,old_ailment=g_BattleAilmentPmSlot;
     s16 old_height=g_BattlePlayerAimHeight;
     for(unsigned i=0;i<48;++i)g_GameState.bank_rows[0][i]=&animation;
     g_ActiveActor=&actor;g_PlayerEntity=(FieldActor *)&player;
@@ -358,13 +358,30 @@ static int original_player_turn(void)
         HASH_TURN(player.actionData==&animation,1);
     }
 #undef HASH_TURN
+    /* The following queue entry still names the same released target. The
+     * completed shot must advance without reading HP or starting an ailment. */
+    for (unsigned mode=7;mode<=11;mode+=2) {
+        memset(&player,0,sizeof player);memset(&target,0,sizeof target);
+        player.core=&actor;player.actionMode=mode;
+        player.animLastFrame=8;player.animPrev.fixed=8<<16;
+        actor.stateFlags=0;action.attackWord=1;action.turnWord=0x101;
+        memset(g_BattleActionQueue,0,sizeof g_BattleActionQueue);
+        g_BattleActionQueue[0]=(BattleInitSlot){&target,1,0};
+        g_BattleActionQueue[1]=(BattleInitSlot){&target,3,0};
+        g_BattleActionIndex=0;g_BattleActionQueueCount=2;
+        g_BattleActionAnimModes[1]=4;g_BattleActionAnimModes[3]=3;
+        g_BattleAilmentPmSlot=-1;
+        Battle_UpdatePlayerTurn();
+        if(g_BattleActionIndex!=1 || g_BattleActionAnimModes[1]!=7 ||
+           g_BattleAilmentPmSlot!=-1 || target.core) return 0;
+    }
     memcpy(g_GameState.bank_rows[0],old_animations,sizeof(old_animations));
     memcpy(g_BattleActionQueue,old_queue,sizeof(old_queue));
     g_ActiveActor=old_actor;g_PlayerEntity=old_player;g_GameStateFlags=old_flags;
     g_BattleActionQueueCount=old_count;g_BattleActionIndex=old_index;
     g_BattleRemainingActions=old_remaining;g_BattleHitTimer=old_hit_timer;
     memcpy(g_BattleActionAnimModes,old_modes,sizeof(old_modes));
-    g_BattleAttackPmSlot=old_attack;g_BattleImpactPmSlot=old_impact;g_BattlePlayerAimHeight=old_height;
+    g_BattleAttackPmSlot=old_attack;g_BattleImpactPmSlot=old_impact;g_BattleAilmentPmSlot=old_ailment;g_BattlePlayerAimHeight=old_height;
     if(hash!=UINT64_C(0x782dd423afe0eac1)) {
         fprintf(stderr,"Original player turn hash %016llx differs from USA MIPS\n",(unsigned long long)hash);return 0;
     }

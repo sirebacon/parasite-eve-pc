@@ -76,8 +76,48 @@ static int widescreen_gpu_capture(void)
     Psyz_VideoSetWidescreen(0);
     return 0;
 }
+/* Force many alternating blend groups without presenting a frame. At x8 this
+ * also exercises the independent native and scaled VRAM paths. */
+static int descriptor_gpu_capture(const char *path)
+{
+    if(!InitPlatform())return 77;
+    ResetGraph(0);
+    DISPENV display;DRAWENV draw;
+    SetDefDispEnv(&display,0,0,320,224);PutDispEnv(&display);
+    SetDefDrawEnv(&draw,0,0,320,224);draw.isbg=1;
+    setRGB0(&draw,0,0,0);PutDrawEnv(&draw);SetDispMask(1);
+    FILE *output=fopen(path,"wb");CHECK(output);
+    const unsigned scales[]={1,2,8};
+    for(unsigned scale=0;scale<3;++scale){
+        CHECK(Psyz_VideoSetInternalResolution(scales[scale])==0);
+        int width=0,height=0;
+        free(Psyz_VideoAllocRenderedFrame(&width,&height));
+        PutDrawEnv(&draw);
+        DR_TPAGE page;setDrawTPage(&page,0,0,GetTPage(0,0,0,0));DrawPrim(&page);
+        for(int y=0;y<14;++y)for(int x=0;x<20;++x){
+            TILE tile;setTile(&tile);setXY0(&tile,x*16,y*16);setWH(&tile,16,16);
+            setRGB0(&tile,192,0,0);DrawPrim(&tile);
+            setSemiTrans(&tile,1);setRGB0(&tile,0,192,0);DrawPrim(&tile);
+        }
+        DrawSync(0);
+        RECT native_rect={0,0,320,224};
+        u_long native_pixels[320*224/2];StoreImage(&native_rect,native_pixels);
+        CHECK(fwrite(native_pixels,1,320u*224u*2u,output)==320u*224u*2u);
+        unsigned char *pixels=Psyz_VideoAllocRenderedFrame(&width,&height);
+        CHECK(pixels && width>=320 && height>=224);
+        size_t size=(size_t)width*height*3;
+        unsigned bright=0;
+        for(size_t j=0;j<size;j+=3)if(pixels[j]>40 && pixels[j+1]>40)++bright;
+        CHECK(bright>(unsigned)(width*height/2));
+        CHECK(fwrite(&width,sizeof width,1,output)==1);
+        CHECK(fwrite(&height,sizeof height,1,output)==1);
+        CHECK(fwrite(pixels,1,size,output)==size);free(pixels);
+    }
+    CHECK(fclose(output)==0);return 0;
+}
 int main(int argc,char **argv)
 {
+    if(argc==3 && !strcmp(argv[1],"--descriptor-gpu"))return descriptor_gpu_capture(argv[2]);
     if(argc==2 && !strcmp(argv[1],"--widescreen-gpu"))return widescreen_gpu_capture();
     FieldActor actors[3] = {0}, reflection = {0};
     RoomFxMirror mirror = {0};

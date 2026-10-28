@@ -734,6 +734,18 @@ if(BUILD_TESTING)
         $<TARGET_OBJECTS:parasite-eve-original-shadow>)
     target_compile_definitions(test-original-shadow PRIVATE __psyz)
     if(PSYZ_RENDERER STREQUAL "sdl3_gpu")
+        add_executable(test-gpu-resource-failures tests/gpu_resource_failures.c)
+        target_link_libraries(test-gpu-resource-failures PRIVATE psyz)
+        foreach(mode upload readback reset)
+            add_test(NAME original-gpu-resource-${mode} COMMAND test-gpu-resource-failures --${mode})
+            set_tests_properties(original-gpu-resource-${mode} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+                LABELS "gpu" ENVIRONMENT "PSYZ_HEADLESS=gpu;SDL_AUDIO_DRIVER=dummy")
+        endforeach()
+        add_test(NAME original-gpu-descriptor-batches COMMAND ${CMAKE_COMMAND}
+            -DTEST_BINARY=$<TARGET_FILE:test-original-shadow>
+            -DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/descriptor-batches
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu_descriptor_batches.cmake)
+        set_tests_properties(original-gpu-descriptor-batches PROPERTIES TIMEOUT 180 LABELS "gpu")
         add_test(NAME original-widescreen-gpu-capture COMMAND test-original-shadow --widescreen-gpu)
         set_tests_properties(original-widescreen-gpu-capture PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60 LABELS "gpu"
             ENVIRONMENT "PSYZ_HEADLESS=gpu;SDL_AUDIODRIVER=dummy")

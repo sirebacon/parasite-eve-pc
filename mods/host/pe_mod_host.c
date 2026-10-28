@@ -389,7 +389,7 @@ int pe_hook_dispatch(int id, void *ctx) {
     if (id == PE_HOOK_SAVE_WRITE && ctx) pe_save_on_write((uint8_t *)ctx);
     /* The EX Game starts with this script command; the title's New Game sends PE_HOOK_NEW_GAME
      * itself. Mods hear both the one way. */
-    if (id == PE_HOOK_INV_COMMAND && ctx && ((const PeHookInvCommand *)ctx)->command == PE_INV_CMD_START_NEW_GAME)
+    if (!handled && id == PE_HOOK_INV_COMMAND && ctx && ((const PeHookInvCommand *)ctx)->command == PE_INV_CMD_START_NEW_GAME)
         pe_hook_dispatch(PE_HOOK_NEW_GAME, &(PeHookNewGame){PE_NEW_GAME_EX});
     return handled;
 }

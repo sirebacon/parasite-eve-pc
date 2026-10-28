@@ -46,7 +46,7 @@ void Battle_UpdatePlayerTurn(void)
 
         {
             if (slot->actor != g_BattleActionQueue[g_BattleActionIndex + 1].actor ||
-                CORE_HEALTH(slot->actor) <= 0) {
+                slot->actor->core == 0 || CORE_HEALTH(slot->actor) <= 0) {
                 u8 count = g_BattleActionAnimModes[1];
                 u8 delta = g_BattleActionAnimModes[3];
                 BattleAction *effectAction = g_ActiveActor->action;

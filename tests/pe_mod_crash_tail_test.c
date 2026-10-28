@@ -8,7 +8,7 @@
 #include "pe_mod_menu.h"
 #include "pe_save.h"
 
-static int writes, inside_mod;
+static int writes, inside_mod, cancel_ex, new_games, last_kind, reset_before_callback = 1;
 static unsigned char card[0x2000], live[0x2000];
 static unsigned char state[4] = {'T', 'E', 'S', 'T'};
 static const PeSaveRecord record = {"pe_test.state", 1, state, sizeof state, NULL, NULL, NULL};
@@ -25,7 +25,21 @@ static int on_frame(void *ctx, void *user) {
     return 0;
 }
 
+static int on_command(void *ctx, void *user) {
+    (void)user;
+    return cancel_ex && ((PeHookInvCommand *)ctx)->command == 1117;
+}
+static int on_new_game(void *ctx, void *user) {
+    const unsigned char zero[sizeof state] = {0};
+    (void)user;
+    if (memcmp(state, zero, sizeof state)) reset_before_callback = 0;
+    last_kind = ((PeHookNewGame *)ctx)->kind;
+    ++new_games;
+    return 0;
+}
 static int test_init(void) {
+    pe_hook_add(PE_HOOK_INV_COMMAND, on_command, NULL, PE_PRIORITY_NORMAL, "pe_test");
+    pe_hook_add(PE_HOOK_NEW_GAME, on_new_game, NULL, PE_PRIORITY_NORMAL, "pe_test");
     pe_hook_add(PE_HOOK_SAVE_WRITE, on_save_write, NULL, PE_PRIORITY_NORMAL, "pe_test");
     pe_hook_add(PE_HOOK_FRAME, on_frame, NULL, PE_PRIORITY_NORMAL, "pe_test");
     return pe_save_register(&record);
@@ -108,6 +122,20 @@ int main(void) {
     pe_mod_crash_describe(report, sizeof report, 1);
     CHECK(strstr(report, "pe_test.state") != NULL);
 
+    /* A handled inventory command never reaches the original EX Game code. */
+    memcpy(state, "TEST", sizeof state);
+    PeHookInvCommand ex = {1117, 0, 0};
+    cancel_ex = 1;
+    CHECK(pe_hook_dispatch(PE_HOOK_INV_COMMAND, &ex) == 1);
+    CHECK(!memcmp(state, "TEST", sizeof state) && new_games == 0);
+    cancel_ex = 0;
+    const int kinds[] = {PE_NEW_GAME_TITLE, PE_NEW_GAME_TUTORIAL, PE_NEW_GAME_EX};
+    for (unsigned i = 0; i < sizeof kinds / sizeof kinds[0]; ++i) {
+        memcpy(state, "TEST", sizeof state);
+        if (kinds[i] == PE_NEW_GAME_EX) pe_hook_dispatch(PE_HOOK_INV_COMMAND, &ex);
+        else pe_hook_dispatch(PE_HOOK_NEW_GAME, &(PeHookNewGame){kinds[i]});
+        CHECK(new_games == (int)i + 1 && last_kind == kinds[i] && reset_before_callback);
+    }
     if (failures) return 1;
     printf("room snapshot save tail: ok\n");
     return 0;

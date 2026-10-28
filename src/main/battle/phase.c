@@ -325,9 +325,11 @@ void Battle_AdvancePhase(void) {
 void Battle_StartEnemyAttackEffect(BattleEntity *entity)
 {
     EnemyCombatant *core = entity->core;
-    /* A finished target can already have released its core. Retail only
-     * accesses status when the attack carries an ailment bit. */
     int effect;
+
+    /* A finished target can already have released its core, also when the
+     * shot carries an ailment bit. With no status left, start no effect. */
+    if (core == NULL) return;
 
     if ((g_ActiveActor->action->turnWord & 0x400) && ((core->statusFlags2 & 3) != 1)) {
         effect = Scene_LoadRoomAssets(7, entity);

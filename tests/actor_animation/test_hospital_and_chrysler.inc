@@ -45,17 +45,16 @@ static int original_attack_effect_status_gate(void)
     g_BattleAilmentPmSlot = -1;
     for (unsigned word = 0; word < 65536; ++word) {
         action.turnWord = word;
-        if (!(word & 0x1F00)) {
-            target.core = NULL;
-            Battle_StartEnemyAttackEffect(&target);
-        }
+        target.core = NULL;
+        Battle_StartEnemyAttackEffect(&target);
+        if (g_BattleAilmentPmSlot != -1) return 0;
         target.core = &core;
         core.statusFlags2 = 0x14015;
         EnemyCombatant before = core;
         Battle_StartEnemyAttackEffect(&target);
         if (memcmp(&core, &before, sizeof(core)) || g_BattleAilmentPmSlot != -1) return 0;
     }
-    puts("Original attack effects: released target core without ailment bits and all 65536 already-applied status gates passed");
+    puts("Original attack effects: released target core and all 65536 already-applied status gates passed");
     return 1;
 }
 
