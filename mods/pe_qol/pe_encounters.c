@@ -37,8 +37,8 @@ static int pe_encounters_reset(void *ctx, void *user) {
 }
 
 static int pe_encounters_command(void *ctx, void *user) {
-    const PeHookInvCommand *command = (const PeHookInvCommand *)ctx;
-    if (command->command == 1117) pe_encounters_reset(NULL, user);
+    (void)ctx;
+    pe_encounters_reset(NULL, user);
     return 0;
 }
 
@@ -48,5 +48,5 @@ void pe_encounters_register(const char *mod_id) {
         s_names, 2, pe_get_skip, pe_set_skip);
     pe_menu_register_tick(pe_encounters_tick);
     pe_hook_add(PE_HOOK_SAVE_READ, pe_encounters_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_INV_COMMAND, pe_encounters_command, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_NEW_GAME, pe_encounters_command, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

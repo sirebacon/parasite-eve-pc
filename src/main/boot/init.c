@@ -85,6 +85,8 @@ int g_BootHostActive;
 u32 g_BootHostVBlankLimit;
 u32 g_BootHostVBlankCount;
 u32 g_BootHostControlAt;
+u32 g_BootHostCrashAt;
+int g_BootHostCrashAbort;
 void (*g_BootHostGraphicsOptions)(int, int, int);
 const char *g_BootHostVramPath;
 const char *g_BootHostFramePath;
@@ -674,8 +676,22 @@ static void Boot_ReadHostControlCommand(void) {
     g_BootHostControlAt = g_BootHostVBlankCount + (u32)frames;
 }
 
+static void Boot_TestCrash(void) {
+    static int *volatile target;
+
+    if (g_BootHostCrashAbort) {
+        fprintf(stderr, "Test crash: abort at VBlank %u\n", (unsigned)g_BootHostVBlankCount);
+        abort();
+    }
+    fprintf(stderr, "Test crash: write to address 0 at VBlank %u\n", (unsigned)g_BootHostVBlankCount);
+    *target = 0;
+}
+
 static void Boot_PollHost(void) {
     ++g_BootHostVBlankCount;
+    if (g_BootHostCrashAt && g_BootHostVBlankCount == g_BootHostCrashAt) {
+        Boot_TestCrash();
+    }
     Boot_ApplyScheduledPadAndHealthEvents();
 
     if (Psyz_QuitRequested()) {
@@ -1004,6 +1020,7 @@ void Boot_StoreTableEntry(u32 mask, int value) {
 }
 
 u32 g_PadComboProgress;
+unsigned g_FieldAnalogRunThreshold = 85;
 
 static void Boot_PollConfiguredPad(void);
 static bool native_pad_poll;
@@ -1077,11 +1094,13 @@ void Field_HandleStateTransition(void) {
             pad_bits |= 0x2000;
         }
 
+        int run_mask = g_FieldRenderFlagTable[0];
+        PE_HOOK(PE_HOOK_PAD_MAP, (&(PeHookPadMap){pad_bits, &run_mask}));
         g_FieldPadBits = 0;
         /* Decoded input is saved in pad_bits; reuse the scratch for key indices. */
         for (i = 0; i < 0x20; i++) {
             base_bits = i;
-            if (((u16)pad_bits & g_FieldRenderFlagTable[base_bits]) != 0) {
+            if (((u16)pad_bits & (base_bits == 0 ? run_mask : g_FieldRenderFlagTable[base_bits])) != 0) {
                 g_FieldPadBits |= 1u << base_bits;
                 g_FieldPadHeldFrameCounts[base_bits]++;
             } else {
@@ -1183,6 +1202,23 @@ void Field_HandleStateTransition(void) {
             }
         }
 
+        /* Keep original menu/battle rules; field running follows radial stick
+         * magnitude, independent of facing direction or diagonal movement. */
+        if ((g_PadPackets[0].header & 0xF000) == 0x7000 &&
+            !(g_GameStateFlags & 2) && !menu_open) {
+            int x = (int)g_PadPackets[0].leftX - 128;
+            int y = (int)g_PadPackets[0].leftY - 128;
+            if (x < -127) x = -127;
+            if (y < -127) y = -127;
+            unsigned radius2 = (unsigned)(x*x + y*y);
+            unsigned threshold = g_FieldAnalogRunThreshold;
+            g_FieldPadBits &= ~1u;
+            if ((g_FieldPadBits & 0x78) &&
+                radius2 * 10000u >= 127u * 127u * threshold * threshold) {
+                g_FieldPadBits |= 1;
+            }
+        }
+
         final_pad = g_FieldPadBits;
         final_old = g_FieldPadLastFrame;
         changed = final_pad ^ final_old;
@@ -1254,8 +1290,21 @@ static void Boot_PollConfiguredPad(void) {
     }
     unsigned char packet[PSYZ_PAD_BUF_LEN];
     Psyz_PadsGet(0, (char *)packet, sizeof(packet));
-    if (packet[0] == 0 && packet[1] == PSYZ_CTRL_DIGITAL_PAD) {
+    if (packet[0] == 0 && (packet[1] == PSYZ_CTRL_DIGITAL_PAD ||
+                           packet[1] == PSYZ_CTRL_ANALOG_PAD)) {
         g_PadPackets[0].buttons &= (u16)(packet[2] | ((u16)packet[3] << 8));
+        /* Digital movement takes priority, so keyboard/D-pad input never
+         * borrows a stale stick angle. Preserve the original stick dead zone. */
+        if (packet[1] == PSYZ_CTRL_ANALOG_PAD &&
+            !(~g_PadPackets[0].buttons & 0x00f0) &&
+            (packet[6] < 0x5a || packet[6] >= 0xa1 ||
+             packet[7] < 0x5a || packet[7] >= 0xa1)) {
+            g_PadPackets[0].header = 0x7300;
+            g_PadPackets[0].rightX = packet[4];
+            g_PadPackets[0].rightY = packet[5];
+            g_PadPackets[0].leftX = packet[6];
+            g_PadPackets[0].leftY = packet[7];
+        }
     }
 }
 
@@ -1288,6 +1337,7 @@ void Boot_ResetPadInput(void) {
     native_pad_poll = !headless || !*headless;
     if (g_BootHostActive && native_pad_poll) {
         PadInit(0);
+        Psyz_PadsSetKind(0, 0, PSYZ_CTRL_ANALOG_PAD);
     }
     SDL_RemoveEventWatch(Boot_WatchPadEvent, NULL);
     SDL_AddEventWatch(Boot_WatchPadEvent, NULL);

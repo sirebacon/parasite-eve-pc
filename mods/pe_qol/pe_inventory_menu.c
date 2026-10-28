@@ -34,7 +34,8 @@ static int pe_menu_restore(void *ctx, void *user) {
 }
 static int pe_menu_command(void *ctx, void *user) {
     (void)user;
-    if (((PeHookInvCommand *)ctx)->command == 1117) pe_inventory_menu_shutdown();
+    (void)ctx;
+    pe_inventory_menu_shutdown();
     return 0;
 }
 static int pe_menu_rows(void *ctx, void *user) {
@@ -143,5 +144,5 @@ void pe_inventory_menu_register(const char *mod_id) {
     pe_hook_add(PE_HOOK_SAVE_WRITE, pe_menu_restore, NULL, PE_PRIORITY_EARLY, mod_id);
     pe_hook_add(PE_HOOK_SAVE_READ, pe_menu_restore, NULL, PE_PRIORITY_EARLY, mod_id);
     pe_hook_add(PE_HOOK_SCENE_START, pe_menu_restore, NULL, PE_PRIORITY_EARLY, mod_id);
-    pe_hook_add(PE_HOOK_INV_COMMAND, pe_menu_command, NULL, PE_PRIORITY_EARLY, mod_id);
+    pe_hook_add(PE_HOOK_NEW_GAME, pe_menu_command, NULL, PE_PRIORITY_EARLY, mod_id);
 }

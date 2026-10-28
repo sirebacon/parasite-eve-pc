@@ -15,7 +15,9 @@
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
 #include "pe_present.h"
-#include "pe_save_tail.h"
+#include "pe_save.h"
+
+#define PE_INV_CMD_START_NEW_GAME 1117   /* the EX Game's start (Inv_DispatchCommand) */
 
 extern const PeMod *const g_pe_mods[]; /* generated: pe_mod_list.c */
 
@@ -92,6 +94,26 @@ void pe_log(const char *tag, const char *fmt, ...) {
 }
 
 int pe_mod_interactive(void) { return s_interactive; }
+
+/* ---- what mod code is running, for crash reports ----
+ * Each call into a mod (start, shutdown, a hook or event handler, a per-frame tick, an F1 row)
+ * is marked here, innermost last: two stores per call. */
+enum { PE_MAX_CALLS = 8 };
+static struct { const char *mod_id, *what, *detail; } s_calls[PE_MAX_CALLS];
+static int s_call_depth;
+
+void pe_mod_call_begin(const char *mod_id, const char *what, const char *detail) {
+    if (s_call_depth < PE_MAX_CALLS) {
+        s_calls[s_call_depth].mod_id = mod_id;
+        s_calls[s_call_depth].what = what;
+        s_calls[s_call_depth].detail = detail;
+    }
+    s_call_depth++;
+}
+
+void pe_mod_call_end(void) {
+    if (s_call_depth > 0) s_call_depth--;
+}
 
 /* ---- hooks and events ---- */
 
@@ -194,7 +216,11 @@ static int pe_requires_met(const PeMod *mod) {
 static void pe_shutdown_mods(void) {
     while (s_running_count > 0) {
         const PeMod *mod = s_running[--s_running_count];
-        if (mod->shutdown) mod->shutdown();
+        if (mod->shutdown) {
+            pe_mod_call_begin(mod->id, "shutdown", NULL);
+            mod->shutdown();
+            pe_mod_call_end();
+        }
     }
     if (s_log) fclose(s_log);
     s_log = NULL;
@@ -257,7 +283,9 @@ static void pe_start_mods(void) {
             if (tried[i] || !pe_requires_inited(mod)) continue;
             tried[i] = progress = 1;
             s_current_mod = mod->id;
+            pe_mod_call_begin(mod->id, "start", NULL);
             ok = !mod->init || mod->init() == 0;
+            pe_mod_call_end();
             s_current_mod = NULL;
             if (!ok) { state[i] = PE_MOD_FAILED; pe_mod_log(mod->id, "init failed, mod off"); continue; }
             s_inited_ids[s_inited_count++] = mod->id;
@@ -304,7 +332,7 @@ static void pe_host_start(const PeHookInit *init) {
         pe_equip_sync_init();
         pe_present_install();
     }
-    pe_save_tail_install();                      /* always: a save made with mods off keeps their data too */
+    pe_save_install();                           /* always: a save made with mods off keeps their data too */
     if (s_interactive) pe_panel_install();
     s_started = 1;
     {                                            /* inactive mods' handlers stay registered, skipped */
@@ -313,14 +341,140 @@ static void pe_host_start(const PeHookInit *init) {
     }
 }
 
+int pe_host_init(const PeHookInit *init) {
+    if (!s_started) pe_host_start(init);
+    return 0;
+}
+
+static const char *pe_hook_name(int id) {
+    static const char *const names[PE_HOOK_COUNT] = {
+        [PE_HOOK_INIT] = "init",
+        [PE_HOOK_SCENE_START] = "scene start",
+        [PE_HOOK_FRAME] = "frame",
+        [PE_HOOK_HELP_TEXT] = "help text",
+        [PE_HOOK_INV_COMMAND] = "inventory command",
+        [PE_HOOK_ITEM_ADD] = "item add",
+        [PE_HOOK_SAVE_WRITE] = "save write",
+        [PE_HOOK_SAVE_READ] = "save read",
+        [PE_HOOK_ITEM_COUNT] = "item count",
+        [PE_HOOK_PAD_READ] = "pad read",
+        [PE_HOOK_LIST_ROWS] = "list rows",
+        [PE_HOOK_MAIN_MENU_ACTION] = "main menu action",
+        [PE_HOOK_SCRIPT_RANDOM] = "script random",
+        [PE_HOOK_INVENTORY_SORTED] = "inventory sorted",
+        [PE_HOOK_MAIN_MENU_ICON] = "main menu icon",
+    };
+    if (id >= 0 && id < PE_HOOK_COUNT) return names[id] ? names[id] : "?";
+    return id - PE_HOOK_COUNT < s_event_count ? s_events[id - PE_HOOK_COUNT] : "?";
+}
+
 int pe_hook_dispatch(int id, void *ctx) {
     int i, handled = 0;
-    if (id == PE_HOOK_INIT && !s_started) pe_host_start((const PeHookInit *)ctx);
     if (!s_started) return 0;
+    /* The mods' saved records go back before any mod's own load handler sees the save. */
+    if (id == PE_HOOK_SAVE_READ && ctx) pe_save_on_read((const uint8_t *)ctx);
+    /* A new game: every record resets, and nothing carries over, before any mod hears of it. */
+    if (id == PE_HOOK_NEW_GAME) pe_save_new_game();
     for (i = 0; i < s_handler_count; i++) {
+        int result;
         if (s_handlers[i].id < id) continue;
         if (s_handlers[i].id > id) break;
-        if (s_handlers[i].active && s_handlers[i].fn(ctx, s_handlers[i].user)) handled = 1;
+        if (!s_handlers[i].active) continue;
+        pe_mod_call_begin(s_handlers[i].mod_id, id < PE_HOOK_COUNT ? "hook" : "event", pe_hook_name(id));
+        result = s_handlers[i].fn(ctx, s_handlers[i].user);
+        pe_mod_call_end();
+        if (result) handled = 1;
     }
+    /* After every mod's own save handler: the records go into the save. */
+    if (id == PE_HOOK_SAVE_WRITE && ctx) pe_save_on_write((uint8_t *)ctx);
+    /* The EX Game starts with this script command; the title's New Game sends PE_HOOK_NEW_GAME
+     * itself. Mods hear both the one way. */
+    if (id == PE_HOOK_INV_COMMAND && ctx && ((const PeHookInvCommand *)ctx)->command == PE_INV_CMD_START_NEW_GAME)
+        pe_hook_dispatch(PE_HOOK_NEW_GAME, &(PeHookNewGame){PE_NEW_GAME_EX});
     return handled;
+}
+
+/* ---- crash report room snapshot: save tail ----
+ * The host's records fill the block as a real save would write them (pe_save.h), from memory: no
+ * mod code runs, so the play logger doesn't log a save each room. Called when a room starts, on
+ * the game thread, never inside the crash handler. Not while mod code is running, since its data
+ * may be half changed. */
+int pe_mod_snapshot_save_tail(unsigned char *block) {
+    if (s_call_depth) return -1;
+    pe_save_crash_tail(block);
+    return 0;
+}
+
+/* ---- crash report Mods section (runs inside the crash handler: reads only) ---- */
+
+static const char *pe_mod_label(const char *mod_id) {
+    int i;
+    if (!mod_id || !strcmp(mod_id, "host") || !strcmp(mod_id, "menu")) return "the mod host";
+    for (i = 0; g_pe_mods[i] && i < PE_MAX_MODS; i++)
+        if (!strcmp(g_pe_mods[i]->id, mod_id)) return g_pe_mods[i]->name;
+    return mod_id;
+}
+
+void pe_mod_crash_describe(char *out, size_t size, int on_game_thread) {
+    size_t n = 0;
+    int i, depth = s_call_depth < PE_MAX_CALLS ? s_call_depth : PE_MAX_CALLS;
+#define PE_OUT(...) \
+    do { \
+        int w_ = n < size ? snprintf(out + n, size - n, __VA_ARGS__) : 0; \
+        if (w_ > 0) n += (size_t)w_ < size - n ? (size_t)w_ : size - n - 1; \
+    } while (0)
+
+    PE_OUT("Mod API %d, mod host %s, All mods %s\r\n", PE_MOD_API_VERSION, s_started ? "started" : "not started yet",
+           s_all_on ? "on" : "off (mods did not touch the game)");
+    for (i = 0; g_pe_mods[i] && i < PE_MAX_MODS; i++)
+        PE_OUT("  %s: %s\r\n", g_pe_mods[i]->name, s_mod_note[i][0] ? s_mod_note[i] : g_pe_mods[i]->id);
+
+    if (!depth) {
+        PE_OUT("Mod code running at the crash: none.%s\r\n",
+               s_all_on ? " A mod can still have changed game data earlier: if this repeats, try the same steps "
+                          "with All mods off." : "");
+    } else {
+        const char *mod_id = s_calls[depth - 1].mod_id;
+        PE_OUT("Mod code running at the crash%s (innermost first):\r\n",
+               on_game_thread ? "" : " on the game thread (the crash itself was on another thread)");
+        for (i = depth - 1; i >= 0; i--)
+            PE_OUT("  %s (%s): %s%s%s\r\n", pe_mod_label(s_calls[i].mod_id), s_calls[i].mod_id ? s_calls[i].mod_id : "host",
+                   s_calls[i].what, s_calls[i].detail ? " " : "", s_calls[i].detail ? s_calls[i].detail : "");
+        if (s_call_depth > PE_MAX_CALLS) PE_OUT("  (%d more calls not kept)\r\n", s_call_depth - PE_MAX_CALLS);
+        if (on_game_thread && mod_id && strcmp(mod_id, "host") && strcmp(mod_id, "menu"))
+            PE_OUT("Most likely cause: the mod \"%s\" (%s), in its %s%s%s. The call stack below shows which of its "
+                   "functions.\r\n", pe_mod_label(mod_id), mod_id, s_calls[depth - 1].what,
+                   s_calls[depth - 1].detail ? " " : "", s_calls[depth - 1].detail ? s_calls[depth - 1].detail : "");
+    }
+
+    /* Saved F1 rows (pe_mods.ini), read directly so no mod code runs here. */
+    int settings = 0;
+    PE_OUT("Mod settings (F1, saved in pe_mods.ini):\r\n");
+    for (i = 0; i < pe_menu_row_count(); i++) {
+        const PeMenuRow *row = pe_menu_row(i);
+        if (!row || !row->value) continue;
+        const int v = *row->value;
+        switch (row->kind) {
+        case PE_ROW_TOGGLE:
+            PE_OUT("  %s/%s = %s\r\n", row->page, row->label, v ? "On" : "Off");
+            break;
+        case PE_ROW_CHOICE:
+            PE_OUT("  %s/%s = %s\r\n", row->page, row->label,
+                   v >= 0 && (unsigned)v < row->count ? row->names[v] : "?");
+            break;
+        case PE_ROW_INT:
+            PE_OUT("  %s/%s = %d\r\n", row->page, row->label, v);
+            break;
+        case PE_ROW_DYNAMIC_CHOICE:
+            PE_OUT("  %s/%s = choice %d\r\n", row->page, row->label, v);
+            break;
+        default:
+            continue;
+        }
+        settings++;
+    }
+    if (!settings) PE_OUT("  none\r\n");
+    PE_OUT("Mods' save data (the room snapshot): ");
+    pe_save_crash_describe(out, size, &n);
+#undef PE_OUT
 }

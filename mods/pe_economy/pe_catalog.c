@@ -13,9 +13,9 @@
  *               here: a smaller bag would strand items.
  *   Remove      Empties a slot; the effect stays unlocked.
  *
- * Saved in the card block's free tail at 0x1C90 + 0x40, the recomp's "PECT" v1 layout (16-byte
- * header, then the 312-byte state), so saves carry their unlocks between the two builds. A new
- * game clears it. Publishes the "catalog" service (armor unlocks, for loot and other mods).
+ * Saved by the host as the "pe_economy.catalog" record (host/pe_save.h); saves from before, with
+ * the recomp's "PECT" v1 block (16-byte header, then the 312-byte state), still load. A new game
+ * clears it. Publishes the "catalog" service (armor unlocks, for loot and other mods).
  */
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +26,7 @@
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
+#include "pe_save.h"
 #include "pe_services.h"
 #include "pe1/inventory_state.h"
 
@@ -34,14 +35,12 @@
 #define PE_ITEM_SUPER_TOOL_KIT 0x36
 #define PE_BAG_SLOTS           50
 #define PE_STORAGE_SLOTS       100
-#define PE_INV_CMD_START_NEW_GAME 1117
 
-#define PE_SAVE_AT      (0x1C90 + 0x40)
 #define PE_SAVE_MAGIC   0x54434550u   /* "PECT" */
 #define PE_SAVE_VERSION 1u
 
 static PeCatalogState s_cat;
-_Static_assert(sizeof s_cat == 312, "the PECT save block must keep the recomp build's size");
+_Static_assert(sizeof s_cat == 312, "the PECT block of older saves holds 312 bytes of this state");
 
 PeCatalogState *pe_catalog_state(void) { return &s_cat; }
 int pe_catalog_is_unlocked(int which, int effect) {
@@ -274,44 +273,36 @@ static uint32_t pe_checksum(const uint8_t *p, uint32_t n) {
     return s;
 }
 
-static int pe_on_save_write(void *ctx, void *user) {
-    uint8_t *at = (uint8_t *)ctx + PE_SAVE_AT;
-    const uint32_t header[4] = { PE_SAVE_MAGIC, PE_SAVE_VERSION, sizeof s_cat, pe_checksum((const uint8_t *)&s_cat, sizeof s_cat) };
-    (void)user;
-    memcpy(at, header, sizeof header);
-    memcpy(at + sizeof header, &s_cat, sizeof s_cat);
-    return 0;
-}
-
-static int pe_on_save_read(void *ctx, void *user) {
-    const uint8_t *at = (const uint8_t *)ctx + PE_SAVE_AT;
-    uint32_t header[4];
-    (void)user;
-    memcpy(header, at, sizeof header);
-    memset(&s_cat, 0, sizeof s_cat);
-    if (header[0] != PE_SAVE_MAGIC || header[1] != PE_SAVE_VERSION || header[2] != sizeof s_cat ||
-        header[3] != pe_checksum(at + sizeof header, sizeof s_cat))
-        return 0;
-    memcpy(&s_cat, at + sizeof header, sizeof s_cat);
+static int pe_save_check(void *data) {
+    (void)data;
     if (s_cat.rebuild_count > PE_REBUILD_MAX) s_cat.rebuild_count = 0;
     pe_mod_log("pe_economy", "Mod Catalog loaded: %d gun / %d armor effects, %u to rebuild",
                __builtin_popcount(s_cat.bits[PE_GUN]), __builtin_popcount(s_cat.bits[PE_ARMOR]), (unsigned)s_cat.rebuild_count);
     return 0;
 }
 
-static int pe_on_inv_command(void *ctx, void *user) {
-    (void)user;
-    if (((const PeHookInvCommand *)ctx)->command == PE_INV_CMD_START_NEW_GAME) memset(&s_cat, 0, sizeof s_cat);
+/* Saves from before: the "PECT" block. */
+static int pe_save_upgrade(void *data, const uint8_t *at, unsigned size, unsigned version) {
+    uint32_t header[4];
+    (void)data;
+    if (version != 0 || size < sizeof header + sizeof s_cat) return 1;
+    memcpy(header, at, sizeof header);
+    if (header[0] != PE_SAVE_MAGIC || header[1] != PE_SAVE_VERSION || header[2] != sizeof s_cat ||
+        header[3] != pe_checksum(at + sizeof header, sizeof s_cat))
+        return 1;
+    memcpy(&s_cat, at + sizeof header, sizeof s_cat);
     return 0;
 }
+
+static const PeSaveRecord s_save_record = {
+    "pe_economy.catalog", 1, &s_cat, sizeof s_cat, pe_save_check, pe_save_upgrade, NULL,
+};
 
 /* ---- registration: rules, then the Dismantle feature and the pages ---- */
 
 void pe_catalog_register(const char *mod_id) {
     pe_service_publish("catalog", 1, &s_catalog_api, mod_id);
-    pe_hook_add(PE_HOOK_SAVE_WRITE, pe_on_save_write, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_SAVE_READ, pe_on_save_read, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_INV_COMMAND, pe_on_inv_command, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_save_register(&s_save_record);
     pe_menu_register_int(PE_PAGE_DEBUG_CATALOG, "Mod price common", "Junk for a common effect.", &s_price[0], 0, 500, 5);
     pe_menu_register_int(PE_PAGE_DEBUG_CATALOG, "Mod price mid", "Junk for a mid effect.", &s_price[1], 0, 500, 5);
     pe_menu_register_int(PE_PAGE_DEBUG_CATALOG, "Mod price premium", "Junk for a premium effect (+Tool).", &s_price[2], 0, 500, 5);

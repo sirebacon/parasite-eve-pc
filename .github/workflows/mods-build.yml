@@ -1,0 +1,229 @@
+name: mods-build
+
+# The mods branch with every PE Enhancements mod built in, packaged like the upstream release:
+# Linux x86-64 and arm64, Windows x86-64 (experimental), macOS arm64, and the save editor for
+# Linux and Windows. A push to mods builds them as artifacts; a mods-v* tag also publishes a release.
+
+on:
+  push:
+    branches: [mods]
+    tags: ['mods-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PSYZ_HEADLESS: '1'
+  SDL_AUDIODRIVER: dummy
+
+jobs:
+  linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#mods-v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          echo "VER=$v" >> "$GITHUB_ENV"
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev libudev-dev libdbus-1-dev libdecor-0-dev libvulkan-dev libxtst-dev libxinerama-dev wayland-protocols libdrm-dev libgbm-dev libgles2-mesa-dev
+      - name: Fetch PsyZ and SDL
+        run: |
+          git submodule update --init third_party/psyz
+          git -C third_party/psyz submodule update --init external/SDL
+      - name: Build with mods
+        run: |
+          cmake -S . -B build -G Ninja -DPE_MODS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel 4
+          ./build/parasite-eve-pc --help
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test and build the save editor
+        run: |
+          cargo test --manifest-path save-editor/Cargo.toml --locked
+          cargo build --manifest-path save-editor/Cargo.toml --locked --release
+      - name: Package
+        run: |
+          name="Parasite-Eve-mods-$VER-linux-${{ matrix.arch }}"
+          stage="package/$name"
+          mkdir -p "$stage/docs/images" "$stage/licenses" "$stage/mods"
+          cp build/parasite-eve-pc README.md CHANGELOG.md LICENSE.md THIRD_PARTY_NOTICES.md "$stage/"
+          cp docs/CODE_ORGANIZATION.md "$stage/docs/"
+          cp mods/README.md "$stage/mods/"
+          cp docs/images/gameplay.png "$stage/docs/images/"
+          find third_party/psyz -type f -not -path '*/.git/*' \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) \
+            -exec cp --parents {} "$stage/licenses/" \;
+          ldd build/parasite-eve-pc > "$stage/runtime-dependencies.txt"
+          git rev-parse HEAD > "$stage/source-commit.txt"
+          tar -czf "$name.tar.gz" -C package "$name"
+          editor="Parasite-Eve-Save-Editor-mods-$VER-linux-${{ matrix.arch }}"
+          mkdir -p "package/$editor/licenses"
+          cp save-editor/target/release/pe-save-editor LICENSE.md "package/$editor/"
+          registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          for crate in "$registry"/*/*; do
+            find "$crate" -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) | while read -r f; do
+              rel="$(basename "$crate")/${f#"$crate"/}"
+              mkdir -p "package/$editor/licenses/$(dirname "$rel")"
+              cp "$f" "package/$editor/licenses/$rel"
+            done
+          done
+          tar -czf "$editor.tar.gz" -C package "$editor"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: '*.tar.gz'
+
+  windows-x86_64:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: Version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $v = $env:GITHUB_REF_NAME -replace '^mods-v', '' } else { $v = 'dev-' + $env:GITHUB_SHA.Substring(0, 7) }
+          "VER=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Fetch PsyZ and SDL
+        run: |
+          git submodule update --init third_party/psyz
+          git -C third_party/psyz submodule update --init external/SDL
+      - name: Build with mods
+        run: |
+          cmake -S . -B build -G Ninja -DPE_MODS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel 2
+          ./build/parasite-eve-pc.exe --help
+      - name: Stage the game
+        run: |
+          stage="package/Parasite-Eve-mods-$VER-windows-x86_64"
+          mkdir -p "$stage/docs/images" "$stage/licenses" "$stage/mods"
+          cp build/parasite-eve-pc.exe README.md CHANGELOG.md LICENSE.md THIRD_PARTY_NOTICES.md "$stage/"
+          cp docs/CODE_ORGANIZATION.md "$stage/docs/"
+          cp mods/README.md "$stage/mods/"
+          cp docs/images/gameplay.png "$stage/docs/images/"
+          ldd build/parasite-eve-pc.exe | awk '/ucrt64/ {print $3}' | xargs -r -I{} cp {} "$stage/"
+          find third_party/psyz -type f -not -path '*/.git/*' \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) \
+            -exec cp --parents {} "$stage/licenses/" \;
+          git rev-parse HEAD > "$stage/source-commit.txt"
+      - name: Test and build the save editor
+        shell: pwsh
+        run: |
+          cargo test --manifest-path save-editor/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Save editor regressions failed' }
+          cargo build --manifest-path save-editor/Cargo.toml --locked --release
+          if ($LASTEXITCODE -ne 0) { throw 'Save editor build failed' }
+      - name: Package
+        shell: pwsh
+        run: |
+          $game = "package/Parasite-Eve-mods-$env:VER-windows-x86_64"
+          $editor = "package/Parasite-Eve-Save-Editor-mods-$env:VER-windows-x86_64"
+          New-Item -ItemType Directory -Force "$editor/licenses" | Out-Null
+          Copy-Item save-editor/target/release/pe-save-editor.exe, LICENSE.md $editor
+          $registry = Join-Path $env:USERPROFILE '.cargo/registry/src'
+          Get-ChildItem $registry -Recurse -File | Where-Object { $_.Name -match '^(LICENSE|COPYING|NOTICE|COPYRIGHT)' } | ForEach-Object {
+            $relative = [IO.Path]::GetRelativePath($registry, $_.FullName)
+            $target = Join-Path "$editor/licenses" $relative
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            Copy-Item $_.FullName $target
+          }
+          'Open pe-save-editor.exe to edit a backup of your save. Optional: select your North American disc image for item data. The game must be closed while replacing saves.' | Set-Content "$editor/Read me.txt"
+          Compress-Archive -Path $game -DestinationPath "Parasite-Eve-mods-$env:VER-windows-x86_64-experimental.zip"
+          Compress-Archive -Path $editor -DestinationPath "Parasite-Eve-Save-Editor-mods-$env:VER-windows-x86_64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: '*.zip'
+
+  macos-arm64:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#mods-v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          echo "VER=$v" >> "$GITHUB_ENV"
+      - name: Fetch PsyZ and SDL
+        run: |
+          git submodule update --init third_party/psyz
+          git -C third_party/psyz submodule update --init external/SDL
+      - name: Build with mods
+        run: |
+          cmake -S . -B build -DPE_MODS=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ./build/parasite-eve-pc --help
+      - name: Package .app
+        run: |
+          app="package/Parasite Eve.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp build/parasite-eve-pc "$app/Contents/MacOS/Parasite Eve"
+          cp packaging/macos/Info.plist "$app/Contents/"
+          cp packaging/macos/ParasiteEve.icns "$app/Contents/Resources/"
+          cp README.md CHANGELOG.md LICENSE.md THIRD_PARTY_NOTICES.md mods/README.md package/
+          codesign --force --deep --sign - "$app"
+          git rev-parse HEAD > package/source-commit.txt
+          ditto -c -k --keepParent package "Parasite-Eve-mods-$VER-macos-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: '*.zip'
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/mods-v')
+    needs: [linux, windows-x86_64, macos-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat > notes.md <<EOF
+          Parasite Eve native port ($(echo "$TAG" | sed 's/^mods-v//') base) with the PE Enhancements mods built in: movement and inventory (pe_qol), rebalance, economy, collection and tools. Every mod's per-save data is kept by the host as records.
+
+          You need your own Parasite Eve (USA) disc images (CUE/BIN). Mods start only after **F1 → Manage mods → All mods** is turned on and the game restarted.
+
+          - Linux: x86-64 and arm64 (tar.gz).
+          - Windows x86-64: experimental.
+          - macOS: Apple Silicon, ad-hoc signed (right-click, Open on first launch).
+          - Save editor for Linux and Windows: edit a backup of your save, with the game closed.
+
+          Source commit: $GITHUB_SHA
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Parasite Eve $(echo "$TAG" | sed 's/^mods-v//') with PE Enhancements" \
+            --notes-file notes.md *.tar.gz *.zip SHA256SUMS

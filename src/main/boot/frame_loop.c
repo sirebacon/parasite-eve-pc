@@ -80,6 +80,7 @@ void Boot_FlushSceneFast(void) {
 #define MOVIE_SKIP_START 0x0008u
 
 int (*g_BootMovieSkipConfirm)(void);
+void (*g_BootSceneStarted)(void);
 
 /* The original story movie player has no skip button (the title movies stop
  * on Start in MenuCard_PlayVideo). A new Start press while one
@@ -121,6 +122,7 @@ int Boot_RunFrame(void)
         state = &g_GameState;
         fade = (RenderTintTargetView *)&g_ScreenTint.targetR;
         PE_HOOK(PE_HOOK_SCENE_START, NULL);
+        if (g_BootSceneStarted) g_BootSceneStarted();
         do {
             /* Geometry belongs to this game frame, not to each VBlank.
              * Draw_RenderFrame waits after the OT has already been built. */

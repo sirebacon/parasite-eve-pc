@@ -801,6 +801,11 @@ static int original_all_room_loads(void)
     if(!pe_disc_open(&disc2,second)){pe_disc_close(&disc);return 1;}
     ResetGraph(0);g_CdImageVolumes[0]=&disc;g_CdImageVolumes[1]=&disc2;
     int result=1;
+    struct CachedProgram { const u8 *data; size_t size; u64 hash; };
+    static struct CachedProgram programs[8192];
+    unsigned program_count = 0, program_lookups = 0;
+    size_t program_bytes = 0;
+    u64 lookup_ticks = 0;
     for(unsigned volume=0;volume<2;++volume){
     CdRom_BindImage(volume?&disc2:&disc,NULL);
     if(Asset_OpenPeImage()!=0)goto done;
@@ -819,15 +824,238 @@ static int original_all_room_loads(void)
            g_FieldFxTaskPrograms[38]!=&g_RoomHomingFlashProgram))goto done;
         if(homing)for(unsigned i=0;i<sizeof(g_RoomScriptArgs);++i)
             if(((unsigned char *)g_RoomScriptArgs)[i])goto done;
+        /* Catalogue real SFX programs on both discs. Retain their hashes
+         * across all room-buffer reuse and verify deduplication explicitly. */
+        SceneAssetBlob *archive = (SceneAssetBlob *)g_GameState.loaded_scene_assets;
+        SceneAssetDirectory *directory = SceneAsset_ResolveOffset(archive, archive->directoryOffset);
+        u32 packed = directory->streamEntries;
+        SceneCdStreamRecord *streams = SceneAsset_ResolveOffset(archive, packed & 0x3FFFFF);
+        for (unsigned entry = 0; entry < packed >> 22; ++entry) {
+            size_t size = streams[entry].reserved & 0xFFFFFF;
+            if (size < 8) continue;
+            const u8 *source = SceneAsset_ResolveOffset(archive, streams[entry].offset & 0xFFFFFF);
+            u64 start = SDL_GetPerformanceCounter();
+            const u8 *copy = Asset_FindTable2CByU16Key((char *)archive, streams[entry].key);
+            const u8 *again = Asset_FindTable2CByU16Key((char *)archive, streams[entry].key);
+            lookup_ticks += SDL_GetPerformanceCounter() - start; program_lookups += 2;
+            if (!copy || copy != again || memcmp(copy, source, size)) goto done;
+            unsigned i = 0; while (i < program_count && programs[i].data != copy) ++i;
+            if (i == program_count) {
+                if (program_count == 8192) goto done;
+                u64 hash = UINT64_C(14695981039346656037);
+                for (size_t byte = 0; byte < size; ++byte) hash = (hash ^ copy[byte]) * UINT64_C(1099511628211);
+                programs[program_count++] = (struct CachedProgram){copy, size, hash};
+                program_bytes += size;
+            }
+        }
         ++loaded;
     }
     if(loaded!=414 || empty!=36){fprintf(stderr,"Room catalog counts %u/%u\n",loaded,empty);goto done;}
     printf("Original disc%u room catalog: all 450 entries, 414 nonempty loads, 36 empty records, including all seven HomingFlash bindings and resets passed\n",volume+1);
     }
+    for (unsigned i = 0; i < program_count; ++i) {
+        u64 hash = UINT64_C(14695981039346656037);
+        for (size_t byte = 0; byte < programs[i].size; ++byte)
+            hash = (hash ^ programs[i].data[byte]) * UINT64_C(1099511628211);
+        if (hash != programs[i].hash) goto done;
+    }
+    printf("SFX cache catalogue: %u unique immutable programs, %zu payload bytes, %u lookups in %.3f ms; all hashes survived both disc catalogues\n",
+        program_count, program_bytes, program_lookups, 1000.0 * lookup_ticks / SDL_GetPerformanceFrequency());
     result=0;
 done:
     fx_image_io=0;CdRom_BindImage(NULL,NULL);g_CdImageVolumes[0]=g_CdImageVolumes[1]=NULL;
     pe_disc_close(&disc);pe_disc_close(&disc2);
+    return result;
+}
+
+/* Widescreen in every room. For each camera of each room, at every eighth
+ * scroll position its bounds allow, the background is linked once without
+ * and once with widescreen. Every tile of the 4:3 screen must be linked at
+ * the same place both times, and the span the renderer reports must reach
+ * at least 0..320 and be covered by the linked tiles, column by column, in
+ * every 16-line band the screen's own edge columns are covered (read back
+ * from the ordering table, not the renderer's record). With PsyZ's VRAM copy
+ * on, the renderer also drops tile columns whose texels hold no picture; the
+ * positions where that ends the picture short of the whole tiles are
+ * counted. */
+#include <psyz/gpu.h>
+#include <psyz/video.h>
+#include "pe1/geom_state.h"
+#include "pe1/render_camera.h"
+#include "pe1/render_prim.h"
+s32 Render_BuildMeshList(void);
+typedef struct WidescreenTile { uintptr_t packet; int x, y; } WidescreenTile;
+static int widescreen_tile_order(const void *a,const void *b){
+    uintptr_t x=((const WidescreenTile *)a)->packet,y=((const WidescreenTile *)b)->packet;return x<y?-1:x>y;
+}
+static unsigned widescreen_link(RenderGpuTag *ordering,WidescreenTile *tiles,unsigned capacity,int widescreen){
+    memset(ordering,0,4096*sizeof(*ordering));Psyz_VideoSetWidescreen(widescreen);
+    Render_BuildMeshList();unsigned n=0;
+    for(unsigned k=0;k<4096;++k)for(uintptr_t link=ordering[k].address;link;link=((RenderGpuTag *)link)->address){
+        const RenderTilePacket *packet=(const void *)link;
+        if((packet->code&0xFC)!=0x7C)continue; /* texture-page packets share the chain */
+        if(n==capacity)return capacity+1;
+        tiles[n++]=(WidescreenTile){link,(s16)packet->x,(s16)packet->y};
+    }
+    qsort(tiles,n,sizeof(*tiles),widescreen_tile_order);
+    return n;
+}
+static u16 widescreen_bands(const WidescreenTile *tiles,unsigned n,int column){
+    u16 rows=0;
+    for(unsigned i=0;i<n;++i)if(column>=tiles[i].x && column<tiles[i].x+16)
+        for(int band=0;band<14;++band)if(band*16+8>=tiles[i].y && band*16+8<tiles[i].y+16)rows|=(u16)(1u<<band);
+    return rows;
+}
+/* The span from whole linked tiles: what the renderer reports without texels. */
+static void widescreen_tile_span(const WidescreenTile *tiles,unsigned n,int *left,int *right){
+    u16 edge=0xFFFF;*left=0;*right=320;
+    for(int c=0;c<8;++c)edge&=widescreen_bands(tiles,n,c);
+    while(edge && *left>-RENDER_WIDESCREEN_MARGIN && (widescreen_bands(tiles,n,*left-1)&edge)==edge)--*left;
+    edge=0xFFFF;for(int c=312;c<320;++c)edge&=widescreen_bands(tiles,n,c);
+    while(edge && *right<320+RENDER_WIDESCREEN_MARGIN && (widescreen_bands(tiles,n,*right)&edge)==edge)++*right;
+}
+/* Black game pixels in the presenter's 16:9 view (199 each side of the
+ * centre at 320x224) for a picture span, with the span limited to cap past
+ * the screen and the view's shift to max_shift. classic: a span narrower
+ * than the view shows the 4:3 screen unshifted (PsyZ's current
+ * Psyz_VideoSetWidescreenPicture); otherwise it is centred (the old rule). */
+static int widescreen_black(int left,int right,int cap,int max_shift,int classic){
+    const int centre=160,half=199;int shift=0;
+    if(left<-cap)left=-cap;if(right>320+cap)right=320+cap;
+    int twice=left+right-2*centre; /* rounded half, away from zero like SDL_roundf */
+    if(classic&&right-left<2*half){left=0;right=320;}
+    else if(right-left<=2*half)shift=twice>=0?(twice+1)/2:-((1-twice)/2);
+    else if(centre-half<left)shift=left-(centre-half);
+    else if(centre+half>right)shift=right-(centre+half);
+    if(shift<-max_shift)shift=-max_shift;if(shift>max_shift)shift=max_shift;
+    int black_l=left-(centre+shift-half),black_r=(centre+shift+half)-right;
+    return (black_l>0?black_l:0)+(black_r>0?black_r:0);
+}
+static int original_widescreen_rooms(void)
+{
+    PeDisc disc={0};const char *first=getenv("PE_TEST_DISC");
+    if(!first)return getenv("PE_REQUIRE_GAME_ASSETS")?1:77;
+    if(!SDL_Init(SDL_INIT_EVENTS) || !pe_disc_open(&disc,first))return 1;
+    ResetGraph(0);g_CdImageVolumes[0]=&disc;CdRom_BindImage(&disc,NULL);
+    static RenderGpuTag ordering[4096];static WidescreenTile off[8192],on[8192];
+    size_t buffer_size=16u<<20;void *buffer=malloc(buffer_size);int result=1;
+    unsigned rooms=0,full=0,classic=0,partial=0,positions=0;
+    unsigned barred_before=0,barred_now=0,rooms_barred_before=0,rooms_barred_now=0;
+    unsigned trimmed=0,rooms_trimmed=0,animation_states=0;
+    int animated=getenv("PE_WS_ANIMATIONS")!=NULL;
+    if(!buffer || Asset_OpenPeImage()!=0 || Psyz_GpuSetVramCopy(1)!=0)goto done;
+    Boot_InitGameState();D_8009CDC8='m';fx_image_io=1;
+    g_ActiveDrawSlot=0;D_800B0E38.ordering[0]=ordering;
+    for(unsigned map=1;map<=SCENE_ROOM_COUNT;++map){
+        if(!g_RoomSectorTable[map-1].roomSectors)continue;
+        char name[16];snprintf(name,sizeof(name),"m%04ui",map);
+        if(Scene_LoadRoom(Text_ParseBase32Id((signed char *)name))){fprintf(stderr,"Widescreen M%03u: load failed\n",map);goto done;}
+        static GteMatrix view;static int projection;
+        g_GeomScroll.words.viewMatrix=&view;g_GeomScroll.words.projectionDistance=&projection;
+        GeomState *state=g_GeomState;
+        if(!state || !state->entry_count06)continue;
+        GeomStateAddress address;address.state=state;address.word+=state->entry_offset;
+        unsigned groups=0;
+        for(unsigned i=0;i<state->entry_count06;++i)groups|=1u<<(address.entry[i].group&31);
+        int least=-RENDER_WIDESCREEN_MARGIN,most=320+RENDER_WIDESCREEN_MARGIN,widest=0,narrowest=0;
+        int room_black_before=0,room_black_now=0,room_trimmed=0;
+        for(unsigned group=0;group<32;++group){
+            if(!(groups&(1u<<group)))continue;
+            g_GeomScroll.state.position.groupSelect=(u8)group;void *end=NULL;
+            if(Render_DrawMeshList(buffer,&end) || (char *)end>(char *)buffer+buffer_size){fprintf(stderr,"Widescreen M%03u group%u: mesh list failed\n",map,group);goto done;}
+            int low=g_GeomScroll.state.position.boundsMinX,high=g_GeomScroll.state.position.boundsMaxX;
+            GeomStateAddress controls;controls.state=state;controls.word+=state->ctrl_offset;
+            unsigned poses=1;
+            if(animated)for(unsigned c=0;c<state->entry_count;++c)
+                if(controls.ctrl[c].position.bits.group==group)poses+=controls.ctrl[c].head.packed>>8;
+            u8 *saved_flags=malloc(state->entry_count06);
+            if(!saved_flags)goto done;
+            for(unsigned e=0;e<state->entry_count06;++e)saved_flags[e]=address.entry[e].head.b.flags;
+            for(unsigned pose=0;pose<poses;++pose){
+                for(unsigned e=0;e<state->entry_count06;++e)address.entry[e].head.b.flags=saved_flags[e];
+                if(pose){
+                    unsigned remaining=pose-1;
+                    for(unsigned c=0;c<state->entry_count;++c){
+                        GeomCtrlEntry *control=&controls.ctrl[c];
+                        if(control->position.bits.group!=group)continue;
+                        unsigned count=control->head.packed>>8;
+                        if(remaining>=count){remaining-=count;continue;}
+                        GeomCtrlEntry saved=*control;
+                        Render_SetEntryLimit(c,remaining);Render_SetFlagSlot(c,1);
+                        GeomStateAddress slots;slots.ctrl=control;slots.word+=control->slot_offset;
+                        s16 duration=slots.slots[remaining].duration;
+                        Render_StepGroupAnimations();*control=saved;
+                        slots.slots[remaining].duration=duration;
+                        if(!(address.entry[slots.slots[remaining].entry].head.b.flags&2)){
+                            fprintf(stderr,"Widescreen M%03u group%u control%u frame%u was not activated\n",map,group,c,remaining);
+                            free(saved_flags);goto done;
+                        }
+                        ++animation_states;break;
+                    }
+                }
+            for(int x=low;;x+=animated?(high-low+1)/2+1:8){
+                if(x>high)x=high;
+                g_GeomScroll.state.position.x=(s16)x;Render_ScrollEntries();
+                unsigned n_off=widescreen_link(ordering,off,8192,0),n_on=widescreen_link(ordering,on,8192,1);
+                if(n_off>8192 || n_on>8192){fprintf(stderr,"Widescreen M%03u: too many tiles\n",map);goto done;}
+                int left,right;Render_GetWidescreenPicture(0,&left,&right);Render_CommitWidescreenPicture(0,-1);
+                for(unsigned i=0;i<n_off;++i){
+                    WidescreenTile *hit=bsearch(&off[i],on,n_on,sizeof(*on),widescreen_tile_order);
+                    if(!hit || hit->x!=off[i].x || hit->y!=off[i].y){
+                        fprintf(stderr,"Widescreen M%03u group%u x%d: 4:3 tile at %d,%d moved or dropped\n",map,group,x,off[i].x,off[i].y);goto done;}
+                }
+                if(left>0 || right<320 || left<-RENDER_WIDESCREEN_MARGIN || right>320+RENDER_WIDESCREEN_MARGIN){
+                    fprintf(stderr,"Widescreen M%03u group%u x%d: span %d..%d\n",map,group,x,left,right);goto done;}
+                if(left<0 || right>320){
+                    u16 edge_left=0xFFFF,edge_right=0xFFFF;
+                    for(int c=0;c<8;++c){edge_left&=widescreen_bands(on,n_on,c);edge_right&=widescreen_bands(on,n_on,312+c);}
+                    for(int c=left;c<right;++c){
+                        if(c>=0 && c<320)continue;
+                        u16 edge=c<0?edge_left:edge_right;
+                        if((widescreen_bands(on,n_on,c)&edge)!=edge){
+                            fprintf(stderr,"Widescreen M%03u group%u x%d: hole at column %d inside %d..%d\n",map,group,x,c,left,right);goto done;}
+                    }
+                }
+                int tile_left,tile_right;widescreen_tile_span(on,n_on,&tile_left,&tile_right);
+                if(left<tile_left || right>tile_right){
+                    fprintf(stderr,"Widescreen M%03u group%u x%d: span %d..%d past the tiles %d..%d\n",map,group,x,left,right,tile_left,tile_right);goto done;}
+                if(left!=tile_left || right!=tile_right){++trimmed;room_trimmed=1;
+                    if(getenv("PE_WS_TRIMMED"))printf("Widescreen M%03u group%u x%d: texels %d..%d, tiles %d..%d\n",map,group,x,left,right,tile_left,tile_right);}
+                /* before: picture to 54 past the screen, view slid 14 at most */
+                int black_before=widescreen_black(left,right,54,14,0);
+                int black_now=widescreen_black(left,right,RENDER_WIDESCREEN_MARGIN,39,1);
+                /* now either the full 16:9 view or the plain 4:3 screen */
+                if(black_now!=0 && black_now!=2*(199-160)){
+                    fprintf(stderr,"Widescreen M%03u group%u x%d: %d black, neither 16:9 nor 4:3 (span %d..%d)\n",
+                        map,group,x,black_now,left,right);goto done;}
+                barred_before+=black_before>0;barred_now+=black_now>0;
+                room_black_before=black_before>room_black_before?black_before:room_black_before;
+                room_black_now=black_now>room_black_now?black_now:room_black_now;
+                least=left>least?left:least;most=right<most?right:most;
+                widest=widest>right-left?widest:right-left;narrowest=narrowest&&narrowest<right-left?narrowest:right-left;
+                ++positions;
+                if(x==high)break;
+            }
+            }
+            for(unsigned e=0;e<state->entry_count06;++e)address.entry[e].head.b.flags=saved_flags[e];
+            free(saved_flags);
+        }
+        ++rooms;
+        if(narrowest==320+2*RENDER_WIDESCREEN_MARGIN)++full;else if(widest==320)++classic;else ++partial;
+        rooms_barred_before+=room_black_before>0;rooms_barred_now+=room_black_now>0;rooms_trimmed+=room_trimmed;
+        printf("Widescreen M%03u: %d..%d at every position, widest %d, most black %d (was %d)\n",
+            map,least,most,widest,room_black_now,room_black_before);
+    }
+    printf("Widescreen: %u rooms, %u positions; %u always 16:9, %u always 4:3, %u in between; no 4:3 tile moved, no hole\n",
+        rooms,positions,full,classic,partial);
+    printf("Widescreen bars: %u positions in %u rooms (was %u in %u)\n",
+        barred_now,rooms_barred_now,barred_before,rooms_barred_before);
+    printf("Widescreen texels: picture ends inside a tile at %u positions in %u rooms\n",trimmed,rooms_trimmed);
+    printf("Widescreen animation: %u authored controller states checked%s\n",animation_states,animated?" at camera start, middle and end":" (static pass)");
+    result=rooms==0 || (animated && !animation_states);
+done:
+    Psyz_VideoSetWidescreen(0);Psyz_GpuSetVramCopy(0);free(buffer);
+    fx_image_io=0;CdRom_BindImage(NULL,NULL);g_CdImageVolumes[0]=NULL;pe_disc_close(&disc);
     return result;
 }
 

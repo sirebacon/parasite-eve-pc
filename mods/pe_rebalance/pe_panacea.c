@@ -27,7 +27,7 @@ static void pe_encode(u8 *out, const char *text) {
 static int pe_panacea_text(void *ctx, void *user) {
     PeHookTextLookup *text = ctx;
     (void)user;
-    if (text->index == ITEM_ITEM25 - 1) {
+    if (g_pe_panacea && pe_game_loaded() && text->index == ITEM_ITEM25 - 1) {
         if (text->table == 8) *text->text = s_name;
         if (text->table == 12) *text->text = s_description;
     }
@@ -50,13 +50,14 @@ static int pe_panacea_use(void *ctx, void *user) {
 
 static void pe_panacea_tick(void) {
     ItemDataRecord *panacea, *medicine;
+    if (!g_pe_panacea) { pe_panacea_shutdown(); return; }
     if (!pe_game_loaded() || !(panacea = pe_base_item(ITEM_ITEM25))) return;
     if (panacea != s_record) {
         s_record = panacea;
         s_old_flags = panacea->flags;
         s_old_icon = panacea->iconId;
     }
-    s_our_flags = (panacea->flags & ~3u) | (g_pe_panacea ? 3u : 0u);
+    s_our_flags = (panacea->flags & ~3u) | 3u;
     panacea->flags = s_our_flags;
     medicine = pe_base_item(ITEM_MEDICINE_4);
     s_our_icon = medicine ? medicine->iconId : panacea->iconId;

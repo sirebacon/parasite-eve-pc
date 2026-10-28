@@ -2,6 +2,7 @@
 #include "menu_memcard_menu.h"
 #include "menu_memcard_screen.h"
 #include "pe1/boot.h"
+#include <psyz/video.h>
 #include <stdio.h>
 
 /* Screen state belongs to the original title module. Native GPU tags and
@@ -133,6 +134,8 @@ void MenuCard_ShowLogoFade(void) {
     s32 i;
     s32 page;
     s32 shade;
+    s32 widescreen;
+    s32 stalePages;
 
     tim = (MemcardTim *)&g_MemcardImageBundle[g_MemcardImageOffsets[8]];
     LoadImage(&tim->clut.rect, tim->clut.data);
@@ -173,8 +176,22 @@ void MenuCard_ShowLogoFade(void) {
         first->disp.isrgb24 = 0;
     }
     SetDispMask(1);
+    widescreen = Psyz_VideoGetWidescreen();
+    stalePages = 0;
 
     for (i = 0; i < 480; i++) {
+        /* The logo is drawn over the last frame without a clear. Widescreen
+         * switched while it shows changes the logo's drawn shape, so the old
+         * shape would stay around the new one: clear each page once before
+         * it is next drawn (the shown page stays until the flip). */
+        if (Psyz_VideoGetWidescreen() != widescreen) {
+            widescreen = Psyz_VideoGetWidescreen();
+            stalePages = 2;
+        }
+        if (stalePages > 0 && g_MemcardCurrentScreen != NULL) {
+            ClearImage(&g_MemcardCurrentScreen->draw.clip, 0, 0, 0);
+            stalePages--;
+        }
         page = g_MemcardScreenPage == 0;
         g_MemcardScreenPage = page;
         g_MemcardCurrentScreen = g_MemcardScreenBuffers[page];

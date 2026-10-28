@@ -30,12 +30,25 @@
  * Every other mod's pe_log row (loot, purchases, installs, Combine, settings changed ...) is copied
  * in as well, through the host's PE_EVENT_LOG_LINE.
  *
+ * Freeze trace (F1 > Debug > Play log > Freeze trace), for hangs that leave no other row:
+ *   speed       the turbo speed changing: from -> to (1 is off).
+ *   phase       where the game is moving between field, battle and transition (drawn frames with
+ *               neither a field nor a battle frame: a door, a load, a battle intro); scene marks
+ *               PE_HOOK_SCENE_START. Each carries the frame counters and the speed.
+ *   beat        once a second from its own thread, so it keeps writing while the game thread is
+ *               stuck: the counters, the phase, the speed and how long since the last drawn frame.
+ *               Counters that stop moving between beats show where it hung; no beats at all means
+ *               the whole process stopped.
+ *
  * The file starts over (the old one renamed with the time) when its header isn't this version's.
  */
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include <SDL3/SDL.h>
+#include <psyz/video.h>
 
 #include "pe_game.h"
 #include "pe_mod_host.h"
@@ -57,7 +70,6 @@
 #define PE_STORAGE        100
 #define PE_ENEMY_SLOTS    7
 #define PE_GAUGE_FULL     9000u
-#define PE_CMD_NEW_GAME   1117
 #define PE_ESCAPE_PHASE   4
 #define PE_MIN_FRAMES     3u       /* shorter: the blip after a load */
 #define PE_WAYNE_SETTLE   90u
@@ -77,6 +89,18 @@ static unsigned s_wayne_prev, s_wayne_from, s_wayne_changed;
 static int s_room_token, s_room_valid;
 static s16 s_prev_bag[PE_BAG], s_prev_store[PE_STORAGE];
 static int s_lists_valid;
+
+/* Freeze trace: counters written on the game thread, read by the beat thread. */
+static int s_trace;
+static SDL_Mutex *s_file_lock;     /* rows come from the game thread and the beat thread */
+static SDL_Thread *s_beat_thread;
+static SDL_AtomicInt s_beat_stop;
+static volatile unsigned s_drawn, s_field_frames, s_battle_ticks, s_speed = 1;
+static volatile Uint64 s_drawn_ms;
+static volatile const char *s_phase = "start";
+static volatile int s_last_map = -1;
+static char s_last_scene[8];
+static unsigned s_seen_field, s_seen_battle;
 
 
 /* Item ids whose count is watched for field pickups: Junk, Tools, kits, Mod Permit, trading cards. */
@@ -129,7 +153,9 @@ static void pe_row(const char *kind, const char *fmt, ...) {
     va_list ap;
     char *c;
     int session;
-    if (!s_logging || !pe_open()) return;
+    if (!s_logging) return;
+    SDL_LockMutex(s_file_lock);
+    if (!pe_open()) { SDL_UnlockMutex(s_file_lock); return; }
     session = !s_session;
     s_session = 1;
     if (session) {                                 /* the first row of a launch */
@@ -150,7 +176,9 @@ static void pe_row(const char *kind, const char *fmt, ...) {
     fprintf(s_log, "%s,%s,", kind, battle);
     if (pe_save_loaded()) fprintf(s_log, "%d,", (int)g_GameState.current_story_day);
     else fprintf(s_log, ",");
-    fprintf(s_log, "%d,%s,", pe_scene_name(g_SceneDispatchToken, scene), scene);
+    s_last_map = pe_scene_name(g_SceneDispatchToken, scene);
+    memcpy(s_last_scene, scene, sizeof s_last_scene);
+    fprintf(s_log, "%d,%s,", s_last_map, scene);
     if (pe_save_loaded())
         fprintf(s_log, "%u,%u,%u,%u,%u,%u,%u,", (unsigned)(g_PlayTimeFrameCounter / 60u), g_AyaSaveState.level + 1u,
                 (unsigned)g_AyaSaveState.total_exp, g_AyaSaveState.current_hp, g_AyaSaveState.max_hp, pe_junk(),
@@ -158,6 +186,7 @@ static void pe_row(const char *kind, const char *fmt, ...) {
     else fprintf(s_log, ",,,,,,,");
     fprintf(s_log, "%s\n", detail);
     fflush(s_log);
+    SDL_UnlockMutex(s_file_lock);
 }
 
 /* Every other mod's pe_log row, copied in. */
@@ -443,13 +472,81 @@ static void pe_track_storage(void) {
     s_lists_valid = 1;
 }
 
+/* ---- freeze trace ---- */
+static void pe_trace_row(const char *kind, const char *what) {
+    pe_row(kind, "%s drawn=%u field=%u battle=%u speed=%u", what, s_drawn, s_field_frames, s_battle_ticks, s_speed);
+}
+
+static void pe_trace_speed(void) {
+    const unsigned now = Psyz_VideoGetSpeed();
+    if (now == s_speed) return;
+    if (s_trace) {
+        char what[32];
+        snprintf(what, sizeof what, "from=%u to=%u", s_speed, now);
+        s_speed = now;
+        pe_trace_row("speed", what);
+    }
+    s_speed = now;
+}
+
+static void pe_trace_phase(const char *phase) {
+    if (s_phase == phase) return;
+    s_phase = phase;
+    if (s_trace) pe_trace_row("phase", phase);
+}
+
+/* Each drawn frame: field, battle, or neither since the last one (a door, a load, a battle intro). */
+static int pe_on_frame_drawn(void *ctx, void *user) {
+    (void)ctx;
+    (void)user;
+    ++s_drawn;
+    s_drawn_ms = SDL_GetTicks();
+    pe_trace_speed();
+    if (s_battle_ticks != s_seen_battle) pe_trace_phase("battle");
+    else if (s_field_frames != s_seen_field) pe_trace_phase("field");
+    else pe_trace_phase("transition");
+    s_seen_battle = s_battle_ticks;
+    s_seen_field = s_field_frames;
+    return 0;
+}
+
+static int pe_on_scene_start(void *ctx, void *user) {
+    (void)ctx;
+    (void)user;
+    pe_trace_speed();
+    if (s_trace) pe_trace_row("phase", "scene_start");
+    return 0;
+}
+
+/* Its own row, not pe_row: game state may be mid-change on the game thread, so it carries the
+ * map and scene of the game thread's last row. */
+static int SDLCALL pe_beat_main(void *user) {
+    (void)user;
+    while (!SDL_GetAtomicInt(&s_beat_stop)) {
+        SDL_Delay(1000);
+        if (!s_logging || !s_trace) continue;
+        SDL_LockMutex(s_file_lock);
+        if (s_log) {
+            const Uint64 since = s_drawn_ms ? SDL_GetTicks() - s_drawn_ms : 0;
+            fprintf(s_log, "beat,,,%d,%s,,,,,,,,phase=%s drawn=%u field=%u battle=%u speed=%u since_drawn_ms=%llu\n",
+                    s_last_map, s_last_scene, (const char *)s_phase, s_drawn, s_field_frames, s_battle_ticks, s_speed,
+                    (unsigned long long)since);
+            fflush(s_log);
+        }
+        SDL_UnlockMutex(s_file_lock);
+    }
+    return 0;
+}
+
 /* ---- every frame (field and battle) ---- */
 static void pe_tick(void) {
     unsigned i;
     int level;
     ++s_frame;
     if (!s_logging) {
+        SDL_LockMutex(s_file_lock);
         if (s_log) { fclose(s_log); s_log = NULL; }
+        SDL_UnlockMutex(s_file_lock);
         s_counts_valid = 0;
         s_pending = PE_PENDING_NONE;
         return;
@@ -501,8 +598,8 @@ static void pe_tick(void) {
 }
 
 /* Once a frame: the field frame outside battle, the battle update in it. */
-static int pe_on_frame(void *ctx, void *user) { (void)ctx; (void)user; if (!pe_in_battle()) pe_tick(); return 0; }
-static int pe_on_battle(void *ctx, void *user) { (void)ctx; (void)user; if (pe_in_battle()) pe_tick(); return 0; }
+static int pe_on_frame(void *ctx, void *user) { (void)ctx; (void)user; ++s_field_frames; if (!pe_in_battle()) pe_tick(); return 0; }
+static int pe_on_battle(void *ctx, void *user) { (void)ctx; (void)user; ++s_battle_ticks; if (pe_in_battle()) pe_tick(); return 0; }
 
 /* ---- hooked moments ---- */
 static int pe_on_steal(void *ctx, void *user) { (void)ctx; (void)user; s_steal_next = 1; return 0; }
@@ -518,8 +615,14 @@ static int pe_on_item_add(void *ctx, void *user) {
 static int pe_on_inv_command(void *ctx, void *user) {
     const PeHookInvCommand *c = ctx;
     (void)user;
-    if (c->command == PE_CMD_NEW_GAME) s_pending = PE_PENDING_NEWGAME;
     if (pe_save_loaded()) pe_row("invcmd", "cmd=%d value=0x%X", c->command, (unsigned)c->value);
+    return 0;
+}
+
+/* A new game of any kind: its row is written once the game is running. */
+static int pe_on_new_game(void *ctx, void *user) {
+    (void)ctx; (void)user;
+    s_pending = PE_PENDING_NEWGAME;
     return 0;
 }
 
@@ -591,18 +694,31 @@ static int pe_on_save_write(void *ctx, void *user) {
 static int pe_on_save_read(void *ctx, void *user) { (void)ctx; (void)user; s_pending = PE_PENDING_CARD; return 0; }
 
 void pe_play_logger_shutdown(void) {
+    if (s_beat_thread) {
+        SDL_SetAtomicInt(&s_beat_stop, 1);
+        SDL_WaitThread(s_beat_thread, NULL);
+        s_beat_thread = NULL;
+    }
+    SDL_LockMutex(s_file_lock);
     if (s_log) fclose(s_log);
     s_log = NULL;
+    SDL_UnlockMutex(s_file_lock);
 }
 
 void pe_play_logger_register(const char *mod_id) {
     pe_menu_register_toggle(PE_PAGE_DEBUG_PLAY_LOG, "Play log", "Log play to pe_play_log.csv beside the settings.", &s_logging, NULL);
     pe_menu_register_toggle(PE_PAGE_DEBUG_PLAY_LOG, "Combat detail", "Play log: a row per hit, turn, spell.", &s_detail, NULL);
+    pe_menu_register_toggle(PE_PAGE_DEBUG_PLAY_LOG, "Freeze trace", "Play log: turbo, transition phases and a beat a second.", &s_trace, NULL);
+    s_file_lock = SDL_CreateMutex();
+    s_beat_thread = SDL_CreateThread(pe_beat_main, "pe_play_beat", NULL);
+    pe_hook_add(PE_HOOK_FRAME_DRAWN, pe_on_frame_drawn, NULL, PE_PRIORITY_LATE, mod_id);
+    pe_hook_add(PE_HOOK_SCENE_START, pe_on_scene_start, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(PE_HOOK_FRAME, pe_on_frame, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(PE_HOOK_BATTLE_UPDATE, pe_on_battle, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(PE_HOOK_STEAL, pe_on_steal, NULL, PE_PRIORITY_EARLY, mod_id);
     pe_hook_add(PE_HOOK_ITEM_ADD, pe_on_item_add, NULL, PE_PRIORITY_EARLY, mod_id);   /* before a mod handles it */
     pe_hook_add(PE_HOOK_INV_COMMAND, pe_on_inv_command, NULL, PE_PRIORITY_EARLY, mod_id);
+    pe_hook_add(PE_HOOK_NEW_GAME, pe_on_new_game, NULL, PE_PRIORITY_EARLY, mod_id);
     pe_hook_add(PE_HOOK_ITEM_COUNT, pe_on_item_count, NULL, PE_PRIORITY_EARLY, mod_id);
     pe_hook_add(PE_HOOK_SPELL, pe_on_spell, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_BATTLE_REWARDS, pe_on_rewards, NULL, PE_PRIORITY_LATE, mod_id);

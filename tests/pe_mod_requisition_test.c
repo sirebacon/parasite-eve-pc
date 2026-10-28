@@ -6,6 +6,7 @@
 #include "pe_game.h"
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
+#include "pe_save.h"
 #include "pe1/script_queue.h"
 SaveRuntimeState g_SaveRuntimeState;
 GameStateBlock g_GameStateBlock;
@@ -36,10 +37,19 @@ int pe_catalog_armor_unlocked(int e) { return !!(unlocked&(1u<<e)); }
 int pe_catalog_unlock_armor(int e) { if(pe_catalog_armor_unlocked(e))return 0;unlocked|=1u<<e;return 1; }
 void pe_log(const char *t,const char *f,...) { (void)t;(void)f; }
 void pe_toast(const char *s) { snprintf(message,sizeof message,"%s",s); }
+const char *pe_mod_current(void) { return "test"; }
+int pe_mod_active(const char *m) { (void)m;return 1; }
+void pe_mod_log(const char *m,const char *fmt,...) { (void)m;(void)fmt; }
 int pe_hook_add(int id,PeHookFn fn,void *u,int p,const char *m) {
     (void)u;(void)p;(void)m;hooks[nh].id=id;hooks[nh++].fn=fn;return 0;
 }
-static void dispatch(int id,void *ctx) { for(int i=0;i<nh;++i)if(hooks[i].id==id)hooks[i].fn(ctx,NULL); }
+/* As the host: records go back before the mods' load handlers and into the save after theirs. */
+static void dispatch(int id,void *ctx) {
+    if(id==PE_HOOK_SAVE_READ)pe_save_on_read(ctx);
+    if(id==PE_HOOK_NEW_GAME)pe_save_new_game();
+    for(int i=0;i<nh;++i)if(hooks[i].id==id)hooks[i].fn(ctx,NULL);
+    if(id==PE_HOOK_SAVE_WRITE)pe_save_on_write(ctx);
+}
 int pe_menu_register_int(const char *p,const char *l,const char *d,int *v,int a,int b,int s) {
     (void)p;(void)d;(void)a;(void)b;(void)s;
     if(!strcmp(l,"Shop price %"))shop_pct=v;
@@ -63,7 +73,7 @@ static void reset(void) {
     memset(&g_GameStateBlock,0,sizeof g_GameStateBlock);memset(&g_GameState,0,sizeof g_GameState);
     loaded=economy=1;junk=10000;unlocked=0;fail_spend=discount=0;limit=10;
     *shop_pct=100;*tool_cap=100;
-    PeHookInvCommand c={1117,0,0};dispatch(PE_HOOK_INV_COMMAND,&c);
+    PeHookNewGame c={PE_NEW_GAME_TITLE};dispatch(PE_HOOK_NEW_GAME,&c);
     for(int i=0;i<3;++i)g_KeyItemRecords[i].bonusStats[2]=999;
     g_ScriptVariableBank[80]=0x10000;
 }
@@ -73,7 +83,7 @@ int main(void) {
     for(int i=1;i<256;++i) { bases[i].iconId=1;bases[i].kind=10; }
     bases[2].kind=bases[3].kind=16;bases[2].ammo=15;bases[3].ammo=30;
     bases[5].kind=17;bases[5].ammo=1;bases[0x3F].kind=8;
-    pe_requisition_register("test");pe_requisition_menu_register("test");reset();
+    pe_save_install();pe_requisition_register("test");pe_requisition_menu_register("test");reset();
     assert(pe_shop_count()==19 && pe_shop_item(-1)==0 && pe_shop_item(19)==0);
     assert(pe_shop_price(8)==35 && pe_shop_price(9)==80 && pe_shop_price(0x12)==300);
     g_ScriptVariableBank[80]=0x16666;assert(pe_shop_price(0x12)==500);
@@ -112,11 +122,18 @@ int main(void) {
     g_GameStateFlags=2;assert(!purchase(6));g_GameStateFlags=4;assert(!purchase(6));
     g_GameStateFlags=0;g_GameStateFlagsWord=0x200;assert(!purchase(6));
     reset();uint8_t card[8192];memset(card,0xCC,sizeof card);set_tools(7);
-    dispatch(PE_HOOK_SAVE_WRITE,card);assert(card[0x1E50]=='P' && card[0x1E51]=='E' && card[0x1E52]=='S' && card[0x1E53]=='H');
-    assert(card[0x1E60]==7 && card[0x1E64]==0xCC);set_tools(0);
+    /* The host's record: "PEMC" (20-byte header), then the one record (id, version 1, 4 bytes, CRC) and its bytes. */
+    dispatch(PE_HOOK_SAVE_WRITE,card);assert(!memcmp(card+0x1C90,"PEMC",4) && card[0x1C8F]==0xCC);
+    assert(card[0x1C90+24]==1 && card[0x1C90+26]==4 && card[0x1C90+32]==7 && card[0x1C90+36]==0);set_tools(0);
     dispatch(PE_HOOK_SAVE_READ,card);assert(get_tools()==7 && pe_shop_price(0x16)==100);
+    card[0x1C90+32]^=1;dispatch(PE_HOOK_SAVE_READ,card);assert(get_tools()==0);
+    /* A save from before: the recomp's PESH block at 0x1C90 + 0x1C0 still loads, and a damaged one doesn't. */
+    memset(card,0,sizeof card);
+    {uint32_t old[5]={0x48534550u,1,4,0,5};uint32_t sum=0x5A17C0DEu;
+     for(int i=0;i<4;++i)sum=(sum<<5)+sum+((uint8_t *)&old[4])[i];old[3]=sum;memcpy(card+0x1E50,old,sizeof old);}
+    dispatch(PE_HOOK_SAVE_READ,card);assert(get_tools()==5);
     card[0x1E60]^=1;dispatch(PE_HOOK_SAVE_READ,card);assert(get_tools()==0);
-    set_tools(9);PeHookInvCommand c={1117,0,0};dispatch(PE_HOOK_INV_COMMAND,&c);assert(get_tools()==0);
+    set_tools(9);PeHookNewGame c={PE_NEW_GAME_TITLE};dispatch(PE_HOOK_NEW_GAME,&c);assert(get_tools()==0);
     reset();*selection=row(6);buy();assert(!g_AyaInventoryItems[0]);buy();assert(g_AyaInventoryItems[0]==6 && junk==9994);
     *selection=row(7);buy();tick();buy();assert(!g_AyaInventoryItems[1]);buy();assert(g_AyaInventoryItems[1]==7);
     *selection=row(8);buy();*selection=row(9);buy();assert(!g_AyaInventoryItems[2]);buy();assert(g_AyaInventoryItems[2]==9);

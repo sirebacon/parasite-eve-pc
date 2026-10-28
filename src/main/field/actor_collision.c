@@ -1,4 +1,5 @@
 #include "common.h"
+#include "pe_hooks.h"
 #include <string.h>
 #include "pe1/battle.h"
 #include "pe1/battle_runtime.h"
@@ -66,6 +67,7 @@ void Entity_AdvanceAnim(BattleEntity *entity) {
             }
 
             step = entity->animStep;
+            PE_HOOK(PE_HOOK_ACTOR_STEP, (&(PeHookActorStep){entity, NULL, &step}));
             limit = entity->animStopFrame;
             next_frame = (s32)((u32)old_frame + (u32)step);
             end_frame = (s32)((u32)limit << 16);

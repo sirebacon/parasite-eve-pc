@@ -17,6 +17,9 @@ extern int g_BootHostActive;
 /* Asks whether to skip the story movie, with the movie paused; nonzero skips.
  * Without a host prompt the skip button skips at once. */
 extern int (*g_BootMovieSkipConfirm)(void);
+/* Called when a scene has loaded, after the mods' scene start hook, before
+ * its first frame (the crash report's room snapshot). */
+extern void (*g_BootSceneStarted)(void);
 extern u32 g_BootHostVBlankLimit,g_BootHostVBlankCount;
 /* Headless diagnostic boundary; stdin controls input and graphics settings. */
 extern u32 g_BootHostControlAt;
@@ -26,6 +29,10 @@ extern const char *g_BootHostFramePath;
 extern const char *g_BootHostAudioPath;
 extern BootHostPadEvent *g_BootHostPadEvents;
 extern unsigned g_BootHostPadEventCount;
+/* --test-crash-after / --test-abort-after: a deliberate crash at this VBlank,
+ * to check that crash reports work. */
+extern u32 g_BootHostCrashAt;
+extern int g_BootHostCrashAbort;
 
 /* Frame counter boot/frame_loop.c advances once per frame (an array view, so
  * -G8 units still address it absolutely). */
@@ -72,6 +79,8 @@ extern u32 g_FrameRngCounter;
  * buffers and the cheat sequence masks. */
 extern s32 g_FieldRenderFlagTable[];
 extern u32 g_FieldPadHeldFrameCounts[];
+/* Left-stick magnitude (0..100 percent) required to run outside battles. */
+extern unsigned g_FieldAnalogRunThreshold;
 extern u8 g_PadSetActBuffer[];
 extern u8 g_PadActuatorAlign[];
 extern u32 g_PadComboSequence[];

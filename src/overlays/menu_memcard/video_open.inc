@@ -60,6 +60,9 @@ s32 MENUCARD_OPEN_VIDEO_NAME(s32 number) {
     char name[32];
     VideoEntry *entry;
 
+    /* A failed replacement must not leave the preceding movie audible. */
+    MenuCard_StopMovieAudio();
+    DecDCToutCallback(NULL);
     if (number < 0 || number >= 47 || !g_CdImage || !MENUCARD_VIDEO_PTR0 || !MENUCARD_VIDEO_PTR5) {
         return 0;
     }

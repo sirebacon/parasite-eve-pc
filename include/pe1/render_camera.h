@@ -10,6 +10,10 @@ int Render_ResetGteScreenOffset(void);
 /* Camera initialization scratch: matrix words followed by projection distance. */
 extern u32 g_EntityRenderScratch[9];
 int Render_SetViewport(const s32 *position);
+/* Widescreen: where the field belongs past where the frame Render_SetViewport
+ * just placed draws it (game pixels), and the camera's whole-pixel x it is
+ * drawn for; dx, dy 0 and returns 0 when it does not apply. */
+int Render_GetCameraSubpixel(float *dx, float *dy, int *camera_x);
 int Render_SetScrollMode(int x, int y, int duration, int mode);
 int Render_SaveAndOpenBounds(void);
 int Render_RestoreBounds(void);

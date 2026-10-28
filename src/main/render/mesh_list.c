@@ -13,6 +13,9 @@
 #include "pe1/render_prim.h"
 #include "pe1/render_shadow.h"
 #include "pe1/room_floor.h"
+#include <psyz/gpu.h>
+#include <psyz/video.h>
+#include <string.h>
 
 /* Matching debt: fixed-pins and scheduling constraints preserve the stock PSYQ instruction schedule. */
 
@@ -34,6 +37,227 @@ typedef union RenderLinkAddress {
 #define LINK_PAGE(packet, ordering, mask24, maskTop) \
     LINK_PACKET_PRELOADED(packet, ordering, 0, 0, 0)
 
+/* Widescreen: background tiles are kept up to RENDER_WIDESCREEN_MARGIN past
+ * each side of the 320-pixel screen; the stored backgrounds of scrolling rooms
+ * are wider than the screen. A repeating layer (flags 4) places each tile once
+ * inside a window as wide as the layer, so it is widened only as far as its
+ * width allows. The presenter shows past the screen's edges only the columns
+ * the linked tiles cover as fully as the screen's own edge columns (per
+ * 16-line band of the 224 lines), contiguous from the edge outwards; any gap
+ * or end of the stored picture stays black. A tile counts only from its first
+ * to its last column holding picture: the stored picture can stop inside a
+ * tile (a wall's last tiles hold a few columns of picture and the rest
+ * transparent), which showed as a black strip at that side. The edge
+ * columns' bands come from the whole tiles, so the picture never reaches past
+ * them. */
+#define WS_FIRST_X (-112)
+#define WS_COLUMNS 544
+#define WS_BANDS 14
+static struct {
+    u16 bands[WS_COLUMNS]; /* picture: from the tiles' texels */
+    u16 tiled[WS_COLUMNS]; /* whole linked tiles: for the screen's edge */
+    int tiles;
+} s_WidescreenCover[2];
+
+/* Whether the tile's texel (i, j) holds picture (is not transparent), read
+ * from PsyZ's VRAM copy; -1 when the copy cannot tell (not uploaded, drawn
+ * over, 15-bit page...). Opaque black counts as picture: dark rooms store
+ * real black past the screen. */
+static int Render_WidescreenTexel(const RenderTilePacket *sprite, const RenderTexturePagePacket *page,
+                                  int i, int j) {
+    const unsigned char *known;
+    const unsigned short *vram = Psyz_GpuGetVramCopy(&known);
+    u32 tp = page->command;
+    int bx = (tp & 0xF) * 64;
+    int by = ((tp >> 4) & 1) * 256;
+    int depth = (tp >> 7) & 3;
+    int cx = (sprite->clut & 0x3F) * 16;
+    int cy = (sprite->clut >> 6) & 0x1FF;
+    int tu = (sprite->u + i) & 0xFF;
+    int tv = (sprite->v + j) & 0xFF;
+    int at;
+    u16 c;
+
+    if (vram == NULL || depth == 3) return -1;
+    if (depth == 0) {
+        at = (by + tv) * 1024 + ((bx + tu / 4) & 1023);
+        if (!known[at]) return -1;
+        at = cy * 1024 + ((cx + ((vram[at] >> ((tu & 3) * 4)) & 0xF)) & 1023);
+    } else if (depth == 1) {
+        at = (by + tv) * 1024 + ((bx + tu / 2) & 1023);
+        if (!known[at]) return -1;
+        at = cy * 1024 + ((cx + ((vram[at] >> ((tu & 1) * 8)) & 0xFF)) & 1023);
+    } else {
+        at = (by + tv) * 1024 + ((bx + tu) & 1023);
+    }
+    if (!known[at]) return -1;
+    c = vram[at];
+    return c != 0;
+}
+
+static void Render_AddWidescreenTile(int slot, int x, int y, const RenderTilePacket *sprite,
+                                     const RenderTexturePagePacket *page) {
+    int first = 16;
+    int last = 0;
+    int band;
+    int column;
+    int i;
+    int j;
+
+    /* The tile's picture runs from its first to its last column holding any
+     * picture, on any row; transparent texels between them are part of it. */
+    for (i = 0; i < 16; ++i) {
+        for (j = 0; j < 16; ++j) {
+            int texel = Render_WidescreenTexel(sprite, page, i, j);
+            if (texel < 0) {
+                first = 0;
+                last = 16;
+                i = j = 16;
+            } else if (texel) {
+                first = i < first ? i : first;
+                last = i + 1;
+                break;
+            }
+        }
+    }
+    for (band = 0; band < WS_BANDS; ++band) {
+        int middle = band * 16 + 8;
+        if (middle < y || middle >= y + 16) continue;
+        for (column = x; column < x + 16; ++column) {
+            if (column < WS_FIRST_X || column >= WS_FIRST_X + WS_COLUMNS) continue;
+            s_WidescreenCover[slot].tiled[column - WS_FIRST_X] |= (u16)(1u << band);
+            if (column >= x + first && column < x + last)
+                s_WidescreenCover[slot].bands[column - WS_FIRST_X] |= (u16)(1u << band);
+        }
+    }
+    s_WidescreenCover[slot].tiles++;
+}
+
+static u16 Render_WidescreenEdgeBands(int slot, int first) {
+    u16 rows = 0xFFFF;
+    int column;
+
+    for (column = first; column < first + 8; ++column)
+        rows &= s_WidescreenCover[slot].tiled[column - WS_FIRST_X];
+    return rows;
+}
+
+void Render_GetWidescreenPicture(int slot, int *left, int *right) {
+    u16 edge;
+
+    *left = 0;
+    *right = 320;
+    if (s_WidescreenCover[slot].tiles == 0) return;
+    edge = Render_WidescreenEdgeBands(slot, 0);
+    while (edge != 0 && *left > -RENDER_WIDESCREEN_MARGIN &&
+           (s_WidescreenCover[slot].bands[*left - 1 - WS_FIRST_X] & edge) == edge)
+        --*left;
+    edge = Render_WidescreenEdgeBands(slot, 312);
+    while (edge != 0 && *right < 320 + RENDER_WIDESCREEN_MARGIN &&
+           (s_WidescreenCover[slot].bands[*right - WS_FIRST_X] & edge) == edge)
+        ++*right;
+}
+
+/* Where Render_LinkFieldSubpixel found the slot's room belongs this frame. */
+static struct {
+    int active;
+    float dx, dy;
+    int camera_x;
+} s_FieldShift[2];
+
+void Render_CommitWidescreenPicture(int slot, int buffer_y) {
+    if (buffer_y >= 0 && Psyz_VideoGetWidescreen()) {
+        int left, right;
+        Render_GetWidescreenPicture(slot, &left, &right);
+        if (s_FieldShift[slot].active)
+            Psyz_VideoSetWidescreenPictureShifted(buffer_y, left, right, s_FieldShift[slot].dx,
+                                                  s_FieldShift[slot].dy, s_FieldShift[slot].camera_x);
+        else
+            Psyz_VideoSetWidescreenPicture(buffer_y, left, right);
+    }
+    memset(&s_WidescreenCover[slot], 0, sizeof(s_WidescreenCover[slot]));
+    memset(&s_FieldShift[slot], 0, sizeof(s_FieldShift[slot]));
+}
+
+/* A custom GP0 command switches centred drawing on at the head of the top
+ * entry and off at the head of entry 0, in the ordering table's own order. */
+#define WS_CENTRED_OPCODE 0x1Eu
+static struct {
+    RenderNativeTag tag;
+    uintptr_t code;
+} s_WidescreenCentred[2][2];
+
+static int Render_WidescreenCentredCommand(const u_long *words, int available, void *userdata) {
+    (void)available;
+    (void)userdata;
+    Psyz_VideoSetWidescreenCentred((int)(words[0] & 1));
+    return 1;
+}
+
+void Render_CentreWidescreenOverlay(int slot, RenderNativeTag *ordering, int top_entry) {
+    static int registered;
+    int i;
+
+    if (top_entry <= 0 || !Psyz_VideoGetWidescreen()) return;
+    if (!registered) {
+        Psyz_GpuRegisterCommandHandler(WS_CENTRED_OPCODE, Render_WidescreenCentredCommand, NULL);
+        registered = 1;
+    }
+    for (i = 0; i < 2; ++i) {
+        RenderNativeTag *entry = i == 0 ? ordering + top_entry : ordering;
+        s_WidescreenCentred[slot][i].tag.length = 1;
+        s_WidescreenCentred[slot][i].code = (WS_CENTRED_OPCODE << 24) | (i == 0);
+        s_WidescreenCentred[slot][i].tag.address = entry->address;
+        entry->address = (uintptr_t)&s_WidescreenCentred[slot][i];
+    }
+}
+
+/* Widescreen: the room and its models (ordering-table entries above the
+ * screen layers: text and menus 1-2, battle HUD 4-7) are shown where the
+ * camera's dropped fraction puts them (Render_GetCameraSubpixel), so pans
+ * move evenly. A custom GP0 command marks them as the room
+ * (Psyz_VideoSetWidescreenField): on at the head of the table, off at the
+ * head of the top screen layer. */
+#define FIELD_SUBPIXEL_OPCODE 0x1Du
+#define FIELD_SUBPIXEL_SCREEN_TOP 7
+static struct {
+    RenderNativeTag tag;
+    uintptr_t code;
+} s_FieldSubpixel[2][2];
+
+static int Render_FieldSubpixelCommand(const u_long *words, int available, void *userdata) {
+    (void)available;
+    (void)userdata;
+    Psyz_VideoSetWidescreenField((int)(words[0] & 1));
+    return 1;
+}
+
+void Render_LinkFieldSubpixel(int slot, RenderNativeTag *ordering) {
+    static int registered;
+    float dx, dy;
+    int camera_x;
+    int i;
+
+    s_FieldShift[slot].active = 0;
+    if (!Psyz_VideoGetWidescreen() || !Render_GetCameraSubpixel(&dx, &dy, &camera_x)) return;
+    if (!registered) {
+        Psyz_GpuRegisterCommandHandler(FIELD_SUBPIXEL_OPCODE, Render_FieldSubpixelCommand, NULL);
+        registered = 1;
+    }
+    for (i = 0; i < 2; ++i) {
+        RenderNativeTag *entry = ordering + (i == 0 ? 4095 : FIELD_SUBPIXEL_SCREEN_TOP);
+
+        s_FieldSubpixel[slot][i].tag.length = 1;
+        s_FieldSubpixel[slot][i].code = (FIELD_SUBPIXEL_OPCODE << 24) | (i == 0);
+        s_FieldSubpixel[slot][i].tag.address = entry->address;
+        entry->address = (uintptr_t)&s_FieldSubpixel[slot][i];
+    }
+    s_FieldShift[slot].active = 1;
+    s_FieldShift[slot].dx = dx;
+    s_FieldShift[slot].dy = dy;
+    s_FieldShift[slot].camera_x = camera_x;
+}
+
 int Render_DrawSpriteEntry(GeomEntry *input)
 {
     u32 *position_cursor;
@@ -54,8 +278,16 @@ int Render_DrawSpriteEntry(GeomEntry *input)
     s32 raw_x;
     s32 raw_y;
     s32 screen_src;
+    s32 margin;
+    s32 cull;
+    s32 edge;
     char frame_pad[9];
 
+    margin = Psyz_VideoGetWidescreen() ? RENDER_WIDESCREEN_MARGIN : 0;
+    /* Widescreen: one more tile past each edge for the room's shift
+     * (Render_LinkFieldSubpixel) to bring into view. */
+    edge = Psyz_VideoGetWidescreen() ? 16 : 0;
+    cull = margin + edge;
     active = g_ActiveDrawSlot;
     entry = input;
     sprite = entry->u30.prim;
@@ -104,8 +336,12 @@ int Render_DrawSpriteEntry(GeomEntry *input)
         s32 remainder_y;
         s32 signed_x;
         s32 base_y;
+        s32 wrap_margin;
         signed_x = (s16)raw_x;
         mod_x = entry->anim_mod_x;
+        wrap_margin = ((s32)(mod_x & 0xFFFF) - 0x14F) / 2;
+        if (wrap_margin > cull) wrap_margin = cull;
+        if (wrap_margin < 0) wrap_margin = 0;
         signed_x -= 320;
         divisor_x = mod_x & 0xFFFF;
         signed_x += divisor_x;
@@ -133,15 +369,15 @@ int Render_DrawSpriteEntry(GeomEntry *input)
                     u32 word_x = *position_cursor;
                     s32 x = scroll_x + (word_x >> 22);
                     draw_x = x;
-                    if ((s16)x >= 320) {
+                    if ((s16)x >= 320 + wrap_margin) {
                         s32 modulus_x = entry->anim_mod_x;
                         draw_x = x - modulus_x;
-                    } else if ((s16)x < -15) {
+                    } else if ((s16)x < -15 - wrap_margin) {
                         s32 modulus_x = entry->anim_mod_x;
                         draw_x = modulus_x + x;
                     }
                 }
-                if ((u16)(draw_x + 15) < 0x14F) {
+                if ((u16)(draw_x + 15 + wrap_margin) < 0x14F + 2 * wrap_margin) {
                         s32 draw_y;
                         {
                             u32 word_y = *position_cursor;
@@ -167,6 +403,8 @@ int Render_DrawSpriteEntry(GeomEntry *input)
                                 (sprite_cursor)->y = draw_y;
                                 LINK_PACKET_PRELOADED(sprite_cursor, ot.bytes, sprite_tag, mask24, maskTop);
                                 LINK_PAGE(page_cursor, ot.bytes, mask24, maskTop);
+                                if (margin != 0)
+                                    Render_AddWidescreenTile(active, (s16)draw_x, (s16)draw_y, sprite_cursor, page_cursor);
                             }
                         }
                 }
@@ -193,14 +431,14 @@ int Render_DrawSpriteEntry(GeomEntry *input)
             s32 draw_x;
             workValue = scroll_x + (word >> 22);
             draw_x = workValue;
-            if ((u16)(workValue + 15) < 0x14F) {
+            if ((u16)(workValue + 15 + cull) < 0x14F + 2 * cull) {
                     {
                     s32 y;
                     s32 draw_y;
                     s32 tile_u;
                     y = scroll_y + ((word >> 12) & 0x3FF);
                     draw_y = y;
-                    if ((u16)(y + 15) < 0xEF) {
+                    if ((u16)(y + 15 + edge) < 0xEF + 2 * edge) {
                         tile_u = texture_base + (*(u16 *)position_cursor & 0xFFF);
                         if (((tile_u - 8) & 0xFFFFU) < 0xFF1) {
                             u32 sprite_tag;
@@ -212,6 +450,8 @@ int Render_DrawSpriteEntry(GeomEntry *input)
                             (sprite_cursor)->y = draw_y;
                             LINK_PACKET_PRELOADED(sprite_cursor, ot.bytes, sprite_tag, mask24, maskTop);
                             LINK_PAGE(page_cursor, ot.bytes, mask24, maskTop);
+                            if (margin != 0)
+                                Render_AddWidescreenTile(active, (s16)draw_x, (s16)draw_y, sprite_cursor, page_cursor);
                         }
                     }
                     }

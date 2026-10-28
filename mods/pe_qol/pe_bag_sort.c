@@ -1,10 +1,13 @@
 /* Remembered bag sorting from recomp pe_bag_sort.c. The native game does the
  * sorting and keeps equipped slots attached to their items. Only pointer-free
- * setting IDs are saved, using the original SORT v1 layout and table IDs. */
+ * setting IDs are saved, as the host's "pe_qol.sort" record (host/pe_save.h). The recomp's "SORT"
+ * v1 block is still written at its old spot (the host's save window) for builds without the
+ * host's records; saves from before, or saved by such a build since, load from it. */
 #include "pe_inventory.h"
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
+#include "pe_save.h"
 #include "pe1/inventory_sort.h"
 #include "pe1/inventory_state.h"
 
@@ -12,7 +15,7 @@ enum { PE_SORT_TAIL = 0x1C90 + 0x260 };
 static struct {
     uint32_t mode, rank_ptr, type_ptr, weapon_stat, armor_stat, row_hidden;
 } s_sort;
-_Static_assert(sizeof s_sort == 24, "recomp SORT layout");
+_Static_assert(sizeof s_sort == 24, "the SORT block of older saves holds 24 bytes of this state");
 static s16 s_last[50];
 static int s_seen, s_sorting;
 static const char *const s_modes[] = { "Manual", "Auto" };
@@ -97,31 +100,32 @@ static void pe_sort_tick(void) {
 }
 static int pe_sort_save(void *ctx, void *user) {
     (void)user;
-    s_sort.row_hidden = 0; /* Menu hiding is transient; never persist it in SORT. */
-    pe_inventory_save(ctx, PE_SORT_TAIL, &s_sort, sizeof s_sort, 0x54524F53u, 0x736F7274u);
+    s_sort.row_hidden = 0; /* Menu hiding is transient; never persist it. */
+    pe_inventory_save(ctx, PE_SORT_TAIL, &s_sort, sizeof s_sort, 0x54524F53u, 0x736F7274u);   /* the window */
     return 0;
 }
-static int pe_sort_load(void *ctx, void *user) {
-    (void)user;
-    memset(&s_sort, 0, sizeof s_sort); s_seen = s_sorting = 0;
-    if (!pe_inventory_load(ctx, PE_SORT_TAIL, &s_sort, sizeof s_sort, 0x54524F53u, 0x736F7274u)) return 0;
-    if (s_sort.mode > 1 || s_sort.weapon_stat > 2 || s_sort.armor_stat > 2 ||
-        !pe_rank(s_sort.rank_ptr) || !pe_type(s_sort.type_ptr)) memset(&s_sort, 0, sizeof s_sort);
+static void pe_sort_reset(void *data) { (void)data; memset(&s_sort, 0, sizeof s_sort); s_seen = s_sorting = 0; }
+static int pe_sort_check(void *data) {
+    (void)data;
+    s_seen = s_sorting = 0;
     s_sort.row_hidden = 0;
-    return 0;
+    return s_sort.mode > 1 || s_sort.weapon_stat > 2 || s_sort.armor_stat > 2 ||
+           !pe_rank(s_sort.rank_ptr) || !pe_type(s_sort.type_ptr);
 }
-static int pe_sort_command(void *ctx, void *user) {
-    const PeHookInvCommand *c = ctx;
-    (void)user;
-    if (c->command == 1117) { memset(&s_sort, 0, sizeof s_sort); s_seen = s_sorting = 0; }
-    return 0;
+/* Saves from before: the "SORT" block. */
+static int pe_sort_upgrade(void *data, const uint8_t *old, unsigned size, unsigned version) {
+    (void)data;
+    if (version != 0 || size < 16 + sizeof s_sort) return 1;
+    return !pe_inventory_load(old, 0, &s_sort, sizeof s_sort, 0x54524F53u, 0x736F7274u);
 }
+static const PeSaveRecord s_sort_record = {
+    "pe_qol.sort", 1, &s_sort, sizeof s_sort, pe_sort_check, pe_sort_upgrade, pe_sort_reset,
+};
 void pe_bag_sort_register(const char *mod_id) {
     pe_menu_register_live_choice(PE_PAGE_INVENTORY, "Bag sort", "Auto remembers the game's Sort. Moving items manually switches it off.",
         s_modes, 2, pe_sort_mode, pe_set_sort_mode);
     pe_menu_register_tick(pe_sort_tick);
     pe_hook_add(PE_HOOK_INVENTORY_SORTED, pe_sort_chosen, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_INV_COMMAND, pe_sort_command, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_SAVE_WRITE, pe_sort_save, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_SAVE_READ, pe_sort_load, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_save_register(&s_sort_record);
 }

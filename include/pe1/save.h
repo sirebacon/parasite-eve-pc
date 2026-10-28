@@ -95,6 +95,8 @@ void Save_BuildHeader(void);
 void Save_RestoreHeader(void);
 /* 0: copied; -1: unsupported record links, no tail/runtime mutation. */
 int Save_SerializeTail(void);
+/* The same bytes without the save write hook: no mod sees it. */
+int Save_SerializeTailData(void);
 int Save_DeserializeTail(void);
 
 #endif /* PE1_SAVE_H */

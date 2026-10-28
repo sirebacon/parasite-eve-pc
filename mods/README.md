@@ -106,25 +106,69 @@ A mod that registers into another mod's service at init lists that mod in its `r
 - Read-only values (Junk, prices, results) are `info` rows, never live rows that refuse changes.
 - Every row has a one-line description; actions that cost or destroy something are press-twice.
 
+Movement speed uses the local `PLAYER_MOVE` hook in the original input movement
+handlers. It never writes the actor's `moveFactor`: cutscenes and battle-entry
+scripts own that value, including values that match a mod speed option.
+Always Run changes a local input mask, never the game's mapping table. Battle-start
+speed scales the local script speed before its destination clamp, and the local
+animation increment; it never writes the actor's velocity or `animStep`.
+These options keep no per-actor ownership state to restore after a scene or save load.
 ## Saves
 
-Per-game data goes in the 8 KB card block's free tail (`PE_HOOK_SAVE_WRITE` / `SAVE_READ`),
-inside the game's CRC, at the same offsets as the psxrecomp build so saves move between them:
+Per-save data goes through the host, the same way for every mod (`host/pe_save.h`): register each
+piece of state once in your init, and the host saves, loads and carries it. Never write into the card
+block yourself.
 
-| Offset (from 0x1C90) | Block | Owner |
+```c
+static struct { uint16_t count, pad, ids[32]; } s_keys;
+static const PeSaveRecord s_record = { "pe_qol.keys", 1, &s_keys, sizeof s_keys, check, upgrade, reset };
+pe_save_register(&s_record);
+```
+
+- **Save:** the host copies every running mod's registered state into the card block's free tail
+  (0x1C90..0x1FFF, inside the game's CRC) as named, versioned records, after every mod's own
+  `PE_HOOK_SAVE_WRITE` handler.
+- **Load:** the records go back into each mod's memory before any mod's `PE_HOOK_SAVE_READ` handler
+  runs. `check()` can fix up or refuse what was loaded; a refused or missing record gets `reset()`
+  (zeros without one).
+- **Layouts:** raise the version when the layout changes and read older ones in `upgrade()`. A record
+  newer than the build can read is kept as it is, so playing on an older build doesn't destroy it.
+  The same goes for the whole tail when its container format is newer: every save writes it back
+  unchanged and the mods start from their defaults. Write the state as a struct with a
+  `_Static_assert` on its size, so a changed layout can't ship without a new version.
+- **Mods off:** a record whose mod is off, failed to start or isn't in the build carries from the
+  loaded save into every later save unchanged.
+- **New game:** `PE_HOOK_NEW_GAME` (`PeHookNewGame`: the title's New Game or Tutorial, or the EX Game).
+  The host resets every record and drops the carried ones before any mod hears it, so a record
+  needs no handler of its own; reset anything else per game there. Don't test for script command
+  1117: only the EX Game sends it, and a New Game from the title after a loaded save sends nothing.
+- **Crash reports:** `pe_save_crash_tail()` copies the same records from memory without calling any
+  mod code, so a save rebuilt from a report holds every mod's data. The room snapshot the crash
+  report takes when a room starts uses it, and the report lists its records.
+- **Older builds:** tail bytes 0x200..0x287 stay the old PKEY (key pocket) and SORT blocks, which
+  pe_qol still writes itself, because the official releases read and write them there. The records
+  run around those bytes and their CRC leaves them out, so a save made in an official release keeps
+  every mod's data and its pocket, and the pocket it saved wins when the save comes back here.
+- **Damage:** each record carries its own CRC. If another build writes over part of the records,
+  only the records it hit reset; the rest load. The header also records who wrote the save (mod API
+  version and the host's save writer revision), so later builds can tell older saves apart.
+- **Room:** 744 bytes (the tail's 880 less those 136; 20 for the header, 12 per record). A record
+  that doesn't fit is refused when it registers, with a line in `pe_mods.log`.
+
+Records today:
+
+| Record | Holds | Owner |
 |---|---|---|
-| +0x000 | `PELT` Junk, rare pity, difficulty | pe_economy/pe_loot.c |
-| +0x040 | `PECT` Mod Catalog unlocks, Rebuild list | pe_economy/pe_catalog.c |
-| +0x1C0 | `PESH` Requisition | pe_economy/pe_requisition.c |
-| +0x200 | `PKEY` key item pocket | pe_qol/pe_key_items.c |
-| +0x260 | `SORT` bag sort | pe_qol/pe_bag_sort.c |
+| `pe_economy.loot` | Junk, rare pity, difficulty | pe_economy/pe_loot.c |
+| `pe_economy.catalog` | Mod Catalog unlocks, Rebuild list | pe_economy/pe_catalog.c |
+| `pe_economy.shop` | Requisition | pe_economy/pe_requisition.c |
+| `pe_qol.keys` | key item pocket | pe_qol/pe_key_items.c |
+| `pe_qol.sort` | bag sort | pe_qol/pe_bag_sort.c |
 
-The game builds every save into a cleared buffer, so the host carries the loaded save's tail
-forward (host/pe_save_tail.c, installed always, even with All mods off): it is put back into the
-buffer before the mods' `SAVE_WRITE` handlers run, so a mod that is off, failed to start or isn't in
-the build keeps its block, and blocks of mods nobody here knows survive. New Game clears it. The rule
-for every mod: **always write (or zero) your own block when saving, never skip it**, so a stale copy
-can't outlive a real change. Checks: tests/run_pe_save_tail_test.ps1.
+Saves from earlier builds kept these as fixed blocks (`PELT` +0x000, `PECT` +0x040, `PESH` +0x1C0,
+`PKEY` +0x200, `SORT` +0x260 from 0x1C90, the psxrecomp build's layout). They still load: each block
+reaches its owner's `upgrade()` as version 0, and the next save writes records. Saves made now don't
+load mod data in those earlier builds or in the psxrecomp build. Checks: tests/run_pe_save_test.ps1.
 
 ## Optional encounter and ammo controls
 

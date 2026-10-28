@@ -1,3 +1,4 @@
+#include "pe_hooks.h"
 #include "pe1/geom_state.h"
 #include "pe1/asset_tim.h"
 #include "pe1/battle_runtime.h"
@@ -73,6 +74,15 @@ int *Asset_GetTimClutPixels(TimFile *tim) {
  * the idle resync. All five are contiguous, compile under the default
  * profile and share the pad/analog and camera-angle globals. */
 
+/* Mods can scale this input step without persisting their setting in the
+ * actor's script-controlled moveFactor. With mods off this is the retail value. */
+static int Scene_PlayerMoveFactor(BattleEntity *entity, int running) {
+    int factor = entity->moveFactor;
+    PE_HOOK(PE_HOOK_PLAYER_MOVE,
+        (&(PeHookPlayerMove){entity, &factor, running, (g_GameStateFlags & 2) != 0}));
+    return factor;
+}
+
 void Scene_Init(BattleEntity *entity, int *actionState) {
     if (g_GameStateFlags & 2) {
         Scene_SyncEntityAction(entity, actionState);
@@ -103,7 +113,7 @@ void Scene_UpdatePlayerEntity(BattleEntity *entity, int *actionState)
         Entity_SetActionMode(entity, 22);
         *actionState = 22;
     }
-    speed = Math_FixedMul(0x50000, entity->moveFactor);
+    speed = Math_FixedMul(0x50000, Scene_PlayerMoveFactor(entity, 0));
     speed = Math_FixedMul(speed, entity->moveSpeed << 4);
     if ((g_PadPackets[0].header & 0xF000) == 0x7000) {
         int angle;
@@ -207,7 +217,7 @@ void Scene_UpdateEntityFacing(BattleEntity *entity, int *actionState)
         Entity_SetActionMode(entity, 23);
         *actionState = 23;
     }
-    speed = Math_FixedMul(speed, entity->moveFactor);
+    speed = Math_FixedMul(speed, Scene_PlayerMoveFactor(entity, 1));
     speed = Math_FixedMul(speed, entity->moveSpeed << 4);
     if ((g_PadPackets[0].header & 0xF000) == 0x7000) {
         int angle;

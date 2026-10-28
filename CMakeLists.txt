@@ -4,7 +4,7 @@ if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET
    AND (NOT DEFINED CMAKE_SYSTEM_NAME OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
     set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum supported macOS version")
 endif()
-project(parasite-eve-pc VERSION 0.4.0 LANGUAGES C)
+project(parasite-eve-pc VERSION 0.6.0 LANGUAGES C)
 option(PE_MACOS_BUNDLE "Package the macOS application bundle" OFF)
 
 set(CMAKE_C_STANDARD 11)
@@ -42,6 +42,10 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options("$<$<COMPILE_LANGUAGE:C>:-fno-strict-aliasing>"
         "$<$<COMPILE_LANGUAGE:C>:-ffunction-sections>"
         "$<$<COMPILE_LANGUAGE:C>:-fdata-sections>")
+    # POSIX walks frame chains; Windows uses its native unwind metadata.
+    if(NOT WIN32)
+        add_compile_options("$<$<COMPILE_LANGUAGE:C>:-fno-omit-frame-pointer>")
+    endif()
 elseif(MSVC)
     add_compile_options("$<$<COMPILE_LANGUAGE:C>:/Gy>" "$<$<COMPILE_LANGUAGE:C>:/Gw>")
 endif()
@@ -68,12 +72,13 @@ endfunction()
 # Original scene/archive module owns file-image I/O and completion flags.
 add_library(parasite-eve-original-disc OBJECT src/main/cdrom/scene_assets.c)
 pe_configure_object_library(parasite-eve-original-disc)
+target_link_libraries(parasite-eve-original-disc PRIVATE psyz)
 
 # The executable starts the original game and compiles its modules in place.
-add_executable(parasite-eve-pc src/main/boot/main.c)
+add_executable(parasite-eve-pc src/main/boot/main.c src/main/boot/crash_report.c src/main/boot/crash_report_posix.c)
 target_include_directories(parasite-eve-pc PRIVATE include)
-target_link_libraries(parasite-eve-pc PRIVATE psyz)
-target_compile_definitions(parasite-eve-pc PRIVATE __psyz)
+target_link_libraries(parasite-eve-pc PRIVATE psyz ${CMAKE_DL_LIBS})
+target_compile_definitions(parasite-eve-pc PRIVATE __psyz PE_VERSION="${PROJECT_VERSION}")
 if(APPLE AND PE_MACOS_BUNDLE)
     set_target_properties(parasite-eve-pc PROPERTIES
         MACOSX_BUNDLE TRUE
@@ -396,6 +401,15 @@ function(pe_add_common_unit_test target_name test_name source_file)
 endfunction()
 
 if(BUILD_TESTING)
+    if(NOT EMSCRIPTEN)
+        add_executable(test-crash-report tests/original_input_rules.c
+            src/main/boot/crash_report.c src/main/boot/crash_report_posix.c)
+        target_include_directories(test-crash-report PRIVATE include)
+        target_compile_definitions(test-crash-report PRIVATE PE_CRASH_REPORT_TEST=1)
+        target_link_libraries(test-crash-report PRIVATE psyz)
+        add_test(NAME host-crash-report COMMAND test-crash-report)
+        set_tests_properties(host-crash-report PROPERTIES TIMEOUT 60)
+    endif()
     add_executable(test-original-akao-layout tests/original_akao_layout.c)
     target_include_directories(test-original-akao-layout PRIVATE include)
     add_test(NAME original-game-akao-layout COMMAND test-original-akao-layout)
@@ -464,6 +478,9 @@ if(BUILD_TESTING)
         $<TARGET_OBJECTS:parasite-eve-original-actor-animation>)
     target_include_directories(test-original-actor-animation PRIVATE include tests)
     target_link_libraries(test-original-actor-animation PRIVATE psyz)
+    add_test(NAME original-game-movie-audio-lock-order COMMAND test-original-actor-animation --movie-audio-lock-order)
+    set_tests_properties(original-game-movie-audio-lock-order PROPERTIES TIMEOUT 20 LABELS "audio")
+    add_test(NAME original-game-save-safety COMMAND test-original-actor-animation --save-safety)
     add_test(NAME original-game-actor-animation COMMAND test-original-actor-animation)
     add_test(NAME original-game-animation-event-completion COMMAND test-original-actor-animation --anim-event-completion)
     add_test(NAME original-game-glint COMMAND test-original-actor-animation --glint)
@@ -593,6 +610,12 @@ if(BUILD_TESTING)
         LABELS "game-assets;room" ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy")
     add_test(NAME original-all-room-loads COMMAND test-original-actor-animation --all-room-loads)
     set_tests_properties(original-all-room-loads PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS "game-assets;room")
+    add_test(NAME original-widescreen-rooms COMMAND test-original-actor-animation --widescreen-rooms)
+    set_tests_properties(original-widescreen-rooms PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600
+        LABELS "game-assets;room" ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy")
+    add_test(NAME original-widescreen-animations COMMAND test-original-actor-animation --widescreen-rooms)
+    set_tests_properties(original-widescreen-animations PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600
+        LABELS "game-assets;room" ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy;PE_WS_ANIMATIONS=1")
     add_test(NAME original-m417-chrysler-load COMMAND test-original-actor-animation --m417-load)
     set_tests_properties(original-m417-chrysler-load PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
         LABELS "game-assets;room" ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy")
@@ -683,6 +706,7 @@ if(BUILD_TESTING)
     # Rename its real I/O symbols to keep them distinct from the fixture doubles.
     add_library(parasite-eve-test-disc OBJECT src/main/cdrom/scene_assets.c)
     pe_configure_object_library(parasite-eve-test-disc)
+    target_link_libraries(parasite-eve-test-disc PRIVATE psyz)
     target_compile_definitions(parasite-eve-test-disc PRIVATE
         CdRom_ReadSectorsFromLba=CdRom_ImageReadSectorsFromLba
         CdRom_PollReady=CdRom_ImagePollReady
@@ -709,6 +733,11 @@ if(BUILD_TESTING)
     pe_add_common_unit_test(test-original-shadow original-game-shadow tests/original_shadow.c
         $<TARGET_OBJECTS:parasite-eve-original-shadow>)
     target_compile_definitions(test-original-shadow PRIVATE __psyz)
+    if(PSYZ_RENDERER STREQUAL "sdl3_gpu")
+        add_test(NAME original-widescreen-gpu-capture COMMAND test-original-shadow --widescreen-gpu)
+        set_tests_properties(original-widescreen-gpu-capture PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60 LABELS "gpu"
+            ENVIRONMENT "PSYZ_HEADLESS=gpu;SDL_AUDIODRIVER=dummy")
+    endif()
 
     pe_add_common_unit_test(test-original-stat-assets original-game-stat-assets tests/original_stat_assets.c
         $<TARGET_OBJECTS:parasite-eve-original-disc>
@@ -748,7 +777,18 @@ if(BUILD_TESTING)
             set(fixture_module "${original_module}-coff-fixture")
             if(NOT TARGET ${fixture_module})
                 get_target_property(fixture_files ${original_module} SOURCES)
-                add_library(${fixture_module} OBJECT ${fixture_files})
+                get_target_property(fixture_source_dir ${original_module} SOURCE_DIR)
+                set(fixture_absolute_files)
+                foreach(fixture_file IN LISTS fixture_files)
+                    if(IS_ABSOLUTE "${fixture_file}" OR fixture_file MATCHES "^\\$<")
+                        list(APPEND fixture_absolute_files "${fixture_file}")
+                    else()
+                        get_filename_component(fixture_absolute "${fixture_file}"
+                            ABSOLUTE BASE_DIR "${fixture_source_dir}")
+                        list(APPEND fixture_absolute_files "${fixture_absolute}")
+                    endif()
+                endforeach()
+                add_library(${fixture_module} OBJECT ${fixture_absolute_files})
                 foreach(fixture_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES)
                     get_target_property(fixture_value ${original_module} ${fixture_property})
                     if(fixture_value)
@@ -762,7 +802,9 @@ if(BUILD_TESTING)
         endfunction()
         get_property(native_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
         foreach(native_test IN LISTS native_test_targets)
-            if(native_test MATCHES "^test-")
+            # The reporter must execute real hardware exception dispatch.
+            # Stripping its unwind data makes Windows fail-fast before a report.
+            if(native_test MATCHES "^test-" AND NOT native_test STREQUAL "test-crash-report")
                 get_target_property(native_test_sources ${native_test} SOURCES)
                 set(native_fixture_sources)
                 foreach(native_source IN LISTS native_test_sources)

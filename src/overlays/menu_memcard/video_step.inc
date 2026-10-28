@@ -65,6 +65,7 @@ s32 MENUCARD_STEP_VIDEO_NAME(void) {
 
             (*active)--;
         }
+        MenuCard_StopMovieAudio();
         DecDCToutCallback(0);
     }
     return 0;

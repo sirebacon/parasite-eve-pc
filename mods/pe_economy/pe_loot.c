@@ -23,8 +23,8 @@
  *   - A sweep (free field only) moves Junk, Super Junk (75) and Duper Junk (150) from the bag
  *     and Wayne's storage into the counter.
  *   - The stolen item's name in the steal message is wrapped in the textbox's red highlight.
- *   - Saved in the card block's free tail at 0x1C90, the recomp build's layout ("PELT" v4), so
- *     saves carry their Junk between the two builds. A new game resets it.
+ *   - Saved by the host as the "pe_economy.loot" record (host/pe_save.h); saves from before, with
+ *     the recomp build's "PELT" block, still load. A new game resets it.
  *
  * Other mods: publishes the "junk" service (pe_economy.h); uses "catalog" (economy mod unlocks)
  * and "keys" (key item pocket) when those are present.
@@ -38,6 +38,7 @@
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
+#include "pe_save.h"
 #include "pe1/battle.h"
 #include "pe1/draw_state.h"
 #include "pe1/game_timers.h"
@@ -46,7 +47,6 @@
 
 #define MOD_ID "pe_economy"
 #define PE_INV_CMD_REMOVE_ITEM    1112
-#define PE_INV_CMD_START_NEW_GAME 1117
 #define PE_ITEM_JUNK        0x14
 #define PE_ITEM_SUPER_JUNK  0x0B
 #define PE_ITEM_DUPER_JUNK  0x0C
@@ -56,9 +56,7 @@
 #define PE_STORAGE_SLOTS    100
 #define PE_REWARD_SLOTS     10
 #define PE_RARE_COLOR       0x0030A8D0u /* gold (0xBBGGRR) */
-#define PE_TAIL_OFFSET      0x1C90
 #define PE_TAIL_MAGIC       0x544C4550u /* "PELT" */
-#define PE_TAIL_VERSION     4u
 #define PE_HANDIN_GUARD_FRAMES 120u
 #define PE_HANDIN_MAX       999u
 #define PE_ENEMY_SLOTS      7
@@ -75,6 +73,9 @@ static struct {
     uint8_t disabled;           /* "Junk economy" switched off for this game */
     uint8_t econ_since, permit_since;
 } s_st = { .preset = 1 };
+/* s_st is the "pe_economy.loot" record as it is: a change of layout needs a new record version
+ * and an upgrade() for v1, or every player's Junk resets on load. */
+_Static_assert(sizeof s_st == 36, "pe_economy.loot v1 holds these 36 bytes: raise the version for a new layout");
 
 static int s_enabled = 1;
 static int s_handin_mode;       /* 0 = up to Wayne's next gun, 1 = all */
@@ -526,13 +527,6 @@ static int pe_on_inv_command(void *ctx, void *user) {
     const PeHookInvCommand *c = (const PeHookInvCommand *)ctx;
     int slot;
     (void)user;
-    if (c->command == PE_INV_CMD_START_NEW_GAME) {   /* difficulty and the switch stay */
-        const uint8_t preset = s_st.preset < 3 ? s_st.preset : 1;
-        memset(&s_st, 0, sizeof s_st);
-        s_st.preset = preset;
-        s_st.disabled = (uint8_t)!s_enabled;
-        return 0;
-    }
     if (c->command != PE_INV_CMD_REMOVE_ITEM || c->value != PE_ITEM_JUNK) return 0;
     pe_restore_active_list();
     if (!s_handin_left || !s_st.junk) return 0;
@@ -545,63 +539,75 @@ static int pe_on_inv_command(void *ctx, void *user) {
     return 0;
 }
 
-/* ---- memory-card save tail (recomp layout) ---- */
-static void pe_put32(u8 *p, uint32_t v) { memcpy(p, &v, 4); }
+/* ---- per-save data: the host's "pe_economy.loot" record (pe_save.h) holds s_st ---- */
 static uint32_t pe_get32(const u8 *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 
-static int pe_on_save_write(void *ctx, void *user) {
-    u8 *at = (u8 *)ctx + PE_TAIL_OFFSET;
-    const uint32_t packed = (uint32_t)s_st.rare_dry | ((uint32_t)s_st.rare_carry << 16);
-    const uint32_t extra = (uint32_t)s_st.charm_left | ((uint32_t)s_st.preset << 16) | ((uint32_t)(s_st.disabled & 1u) << 24);
-    const uint32_t since = (uint32_t)s_st.econ_since | ((uint32_t)s_st.permit_since << 8);
-    (void)user;
-    pe_put32(at + 0, PE_TAIL_MAGIC);
-    pe_put32(at + 4, PE_TAIL_VERSION);
-    pe_put32(at + 8, s_st.junk);
-    pe_put32(at + 12, packed);
-    pe_put32(at + 16, extra);
-    pe_put32(at + 20, s_st.junk ^ packed ^ extra ^ 0xA5A5A5A5u);
-    pe_put32(at + 24, since);
-    pe_put32(at + 28, since ^ 0x5A5A5A5Au);
+/* A save without Junk data (vanilla, or New Game): start at 0, the sweep converts; difficulty and
+ * the switch stay. */
+static void pe_save_reset(void *data) {
+    const uint8_t preset = s_st.preset < 3 ? s_st.preset : 1;
+    (void)data;
+    memset(&s_st, 0, sizeof s_st);
+    s_st.preset = preset;
+    s_st.disabled = (uint8_t)!s_enabled;
+}
+
+/* Only the lasting fields carry over; what belongs to a battle starts fresh. */
+static int pe_save_check(void *data) {
+    (void)data;
+    if (s_st.junk > 99999u) return 1;
+    if (s_st.preset > 2) s_st.preset = 1;
+    s_st.disabled &= 1u;
+    s_st.steal_bank = 0;
+    memset(s_st.hits, 0, sizeof s_st.hits);
+    s_st.rng = 0;
     return 0;
 }
 
-static int pe_on_save_read(void *ctx, void *user) {
-    const u8 *at = (const u8 *)ctx + PE_TAIL_OFFSET;
-    const uint8_t preset = s_st.preset < 3 ? s_st.preset : 1;
-    uint32_t version, junk;
-    (void)user;
-    memset(&s_st, 0, sizeof s_st);   /* a vanilla save: start at 0, the sweep converts */
-    s_st.preset = preset;
-    s_st.disabled = (uint8_t)!s_enabled;
-    if (pe_get32(at) == PE_TAIL_MAGIC && (junk = pe_get32(at + 8)) <= 99999u) {
-        version = pe_get32(at + 4);
-        if (version == 1u) {
-            if ((junk ^ 0xA5A5A5A5u) == pe_get32(at + 12)) s_st.junk = junk;
-        } else if (version == 2u) {
-            const uint32_t packed = pe_get32(at + 12);
-            if ((junk ^ packed ^ 0xA5A5A5A5u) == pe_get32(at + 16)) {
-                s_st.junk = junk;
-                s_st.rare_dry = (uint16_t)packed;
-                s_st.rare_carry = (uint16_t)(packed >> 16);
-            }
-        } else if (version == 3u || version == 4u) {
-            const uint32_t packed = pe_get32(at + 12), extra = pe_get32(at + 16);
-            if ((junk ^ packed ^ extra ^ 0xA5A5A5A5u) == pe_get32(at + 20)) {
-                const uint32_t since = pe_get32(at + 24);
-                s_st.junk = junk;
-                s_st.rare_dry = (uint16_t)packed;
-                s_st.rare_carry = (uint16_t)(packed >> 16);
-                s_st.charm_left = (uint16_t)extra;
-                s_st.preset = (uint8_t)(extra >> 16) < 3 ? (uint8_t)(extra >> 16) : 1;
-                s_st.disabled = (uint8_t)((extra >> 24) & 1u);
-                if (version == 4u && (since ^ 0x5A5A5A5Au) == pe_get32(at + 28)) {
-                    s_st.econ_since = (uint8_t)since;
-                    s_st.permit_since = (uint8_t)(since >> 8);
-                }
+/* Saves from before: the recomp build's "PELT" block, versions 1 to 4. */
+static int pe_save_upgrade(void *data, const uint8_t *at, unsigned size, unsigned version) {
+    uint32_t junk;
+    (void)data;
+    if (version != 0 || size < 32) return 1;
+    pe_save_reset(NULL);
+    if (pe_get32(at) != PE_TAIL_MAGIC || (junk = pe_get32(at + 8)) > 99999u) return 1;
+    version = pe_get32(at + 4);
+    if (version == 1u) {
+        if ((junk ^ 0xA5A5A5A5u) == pe_get32(at + 12)) s_st.junk = junk;
+    } else if (version == 2u) {
+        const uint32_t packed = pe_get32(at + 12);
+        if ((junk ^ packed ^ 0xA5A5A5A5u) == pe_get32(at + 16)) {
+            s_st.junk = junk;
+            s_st.rare_dry = (uint16_t)packed;
+            s_st.rare_carry = (uint16_t)(packed >> 16);
+        }
+    } else if (version == 3u || version == 4u) {
+        const uint32_t packed = pe_get32(at + 12), extra = pe_get32(at + 16);
+        if ((junk ^ packed ^ extra ^ 0xA5A5A5A5u) == pe_get32(at + 20)) {
+            const uint32_t since = pe_get32(at + 24);
+            s_st.junk = junk;
+            s_st.rare_dry = (uint16_t)packed;
+            s_st.rare_carry = (uint16_t)(packed >> 16);
+            s_st.charm_left = (uint16_t)extra;
+            s_st.preset = (uint8_t)(extra >> 16) < 3 ? (uint8_t)(extra >> 16) : 1;
+            s_st.disabled = (uint8_t)((extra >> 24) & 1u);
+            if (version == 4u && (since ^ 0x5A5A5A5Au) == pe_get32(at + 28)) {
+                s_st.econ_since = (uint8_t)since;
+                s_st.permit_since = (uint8_t)(since >> 8);
             }
         }
     }
+    return 0;
+}
+
+static const PeSaveRecord s_save_record = {
+    "pe_economy.loot", 1, &s_st, sizeof s_st, pe_save_check, pe_save_upgrade, pe_save_reset,
+};
+
+/* After the host put the record back: the switch follows the save. */
+static int pe_on_save_read(void *ctx, void *user) {
+    (void)ctx;
+    (void)user;
     s_enabled = !s_st.disabled;
     pe_mod_log(MOD_ID, "save loaded: Junk %u, preset %s, economy %s", (unsigned)s_st.junk,
                s_preset_names[s_st.preset], s_enabled ? "on" : "off");
@@ -892,6 +898,6 @@ void pe_loot_register(const char *mod_id) {
     pe_hook_add(PE_HOOK_ITEM_ADD, pe_on_item_add, NULL, PE_PRIORITY_LATE, mod_id);  /* after loggers see the real id */
     pe_hook_add(PE_HOOK_ITEM_COUNT, pe_on_item_count, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_INV_COMMAND, pe_on_inv_command, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_SAVE_WRITE, pe_on_save_write, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_save_register(&s_save_record);
     pe_hook_add(PE_HOOK_SAVE_READ, pe_on_save_read, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

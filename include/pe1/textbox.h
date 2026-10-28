@@ -48,6 +48,9 @@ typedef struct TextboxPoint {
 typedef RenderPagedSpritePacket TextboxGlyphPacket;
 
 extern TextboxEntry g_TextboxEntries[4];
+/* Set by Menu_DrawTextboxEntries when it drew at least one box this frame
+ * (even one it closed while drawing); read and cleared by Draw_RenderFrame. */
+extern u8 g_TextboxDrawnThisFrame;
 
 /* USA has 78 variable-width base glyphs; extended glyphs use fixed cells. */
 extern TextboxGlyphSpacing g_TextboxGlyphSpacing[78];

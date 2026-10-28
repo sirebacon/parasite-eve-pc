@@ -9,7 +9,7 @@
 	<key>CFBundleExecutable</key>
 	<string>Parasite Eve</string>
 	<key>CFBundleGetInfoString</key>
-	<string>Parasite Eve 0.4</string>
+	<string>Parasite Eve @PROJECT_VERSION@</string>
 	<key>CFBundleIconFile</key>
 	<string>ParasiteEve</string>
 	<key>CFBundleIdentifier</key>
@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.0</string>
+	<string>@PROJECT_VERSION@</string>
 	<key>CFBundleVersion</key>
-	<string>0.4.0</string>
+	<string>@PROJECT_VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>NSHighResolutionCapable</key>

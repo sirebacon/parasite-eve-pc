@@ -15,6 +15,7 @@ u8 *g_TextboxMessageSource;
 unsigned char g_TextboxKernGlyph0F;
 TextboxRect g_TextboxPendingRect;
 TextboxEntry g_TextboxEntries[4];
+u8 g_TextboxDrawnThisFrame;
 TextboxGlyphPacket g_TextboxChoiceCursor[2];
 RenderModeTilePacket g_TextboxFogTilePackets[2];
 u8 g_DialogueChoiceCursor;
@@ -281,12 +282,18 @@ void Menu_DrawTextboxEntries(void) {
     TextboxGlyphPacket *packetLimit;
     TextboxNumber *numberStart;
 
+    g_TextboxDrawnThisFrame = 0;
     PE_HOOK(PE_HOOK_TEXTBOXES, NULL);
     if ((unsigned)g_ActiveDrawSlot >= 2) return;
     sectionIndex = 0;
     backgroundDrawn = 0;
     nextPacket = (TextboxGlyphPacket *)D_800B0E38.other_buffers[1 + g_ActiveDrawSlot];
     if (!nextPacket || !D_800B0E38.ordering[g_ActiveDrawSlot]) return;
+    /* Taken before drawing: a box closed below (the button pressed at its
+     * end) still has this frame's text linked. */
+    for (textboxIndex = 0; textboxIndex < 4; ++textboxIndex) {
+        if (g_TextboxEntries[textboxIndex].state != 0) g_TextboxDrawnThisFrame = 1;
+    }
     packetLimit = nextPacket + TEXTBOX_GLYPH_PACKET_CAPACITY;
     if (g_ScriptCollisionFlag != 0) {
         AddPrim(D_800B0E38.ordering[g_ActiveDrawSlot] + 2,

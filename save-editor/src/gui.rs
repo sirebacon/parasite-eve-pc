@@ -98,6 +98,18 @@ pub struct SaveEditorApp {
     script_inspector_offset: usize,
 }
 
+const BAG_SIZE_HELP: &str = "The game sets the bag size from the Item Capacity stat (up to 46), \
+    so saving raises or lowers that stat to match. Armor with \
+    Item Capacity mods adds up to 50 in game.";
+
+const MAX_HP_HELP: &str = "The game recomputes max HP from the HP stat at every battle, so saving \
+    raises or lowers that stat to match (exactly with a game disc loaded). The top is 869, or 999 \
+    while the equipped armor has HP Max Up.";
+
+const SORT_HELP: &str = "Weapons, armor, ammo, medicine, other items, then key items; empty slots \
+    last. Copies of one weapon or armor go best first. The equipped gun and armor stay equipped. \
+    Takes effect when you save.";
+
 // Theme Palette Constants
 const BG_DARKEST: Color32 = Color32::from_rgb(11, 16, 14);
 const BG_PANEL: Color32 = Color32::from_rgb(16, 23, 20);
@@ -138,6 +150,8 @@ impl SaveEditorApp {
             show_script_hex_inspector: false,
             script_inspector_offset: 0,
         };
+
+        crate::disc::load_configured_disc();
 
         if let Some(path) = initial_path {
             app.load_path(&cc.egui_ctx, path);
@@ -551,6 +565,35 @@ impl eframe::App for SaveEditorApp {
                             }
                         }
                     });
+
+                    let game = crate::disc::game_data();
+                    let disc_btn = ui
+                        .button(if game.is_some() { "💿 Game Disc ✔" } else { "💿 Game Disc…" })
+                        .on_hover_text(match &game {
+                            Some(g) => format!(
+                                "Item records and the bag table come from {}.",
+                                g.source.display()
+                            ),
+                            None => "Verified USA equipment templates are available without a disc. \
+                                     Pick a USA disc for exact HP growth calculations."
+                                .to_string(),
+                        });
+                    if disc_btn.clicked() {
+                        if let Some(file) = rfd::FileDialog::new()
+                            .set_title("Select Parasite Eve (USA) Disc Image")
+                            .add_filter("Disc Images", &["cue", "bin", "iso", "img"])
+                            .add_filter("All Files", &["*"])
+                            .pick_file()
+                        {
+                            match crate::disc::load_disc(&file) {
+                                Ok(g) => self.set_status(
+                                    format!("Game data loaded from {}.", g.source.display()),
+                                    false,
+                                ),
+                                Err(e) => self.set_status(format!("{:#}", e), true),
+                            }
+                        }
+                    }
 
                     ui.separator();
 
@@ -1080,8 +1123,15 @@ impl eframe::App for SaveEditorApp {
                             .strong(),
                         |ui| {
                             ui.set_min_width(270.0);
+                            if ui.button("Repair Equipment Icons & Models").clicked() {
+                                save.repair_equipment_types();
+                                let _ = save.to_bytes();
+                                status_toast = Some("Repaired equipment types; upgrades preserved.");
+                                ui.close_menu();
+                            }
                             if ui
-                                .button("✨ Max Aya (Lv 99 • 999 HP • 99,999 BP • 50 Slots)")
+                                .button("✨ Max Aya (Lv 99 • Max HP • 99,999 BP • 46 Slots)")
+                                .on_hover_text(MAX_HP_HELP)
                                 .clicked()
                             {
                                 save.apply_cheat_max_aya();
@@ -1118,13 +1168,19 @@ impl eframe::App for SaveEditorApp {
                             }
                             ui.separator();
                             if ui
-                                .button("🏆 Add Ultimate Loadout (P90 + Cm Suit 2 + Super Tool Kit)")
+                                .button("🏆 Equip Ultimate Loadout (P90 + Cm Suit 2 + Super Tool Kit)")
+                                .on_hover_text(
+                                    "Adds an ultimate P90 and Cm Suit 2 and puts them on (the old \
+                                     gun and armor stay in the bag), plus tool kits and medicine. \
+                                     The suit's HP Max Up lets Max Aya reach 999 HP.",
+                                )
                                 .clicked()
                             {
                                 if save.apply_cheat_give_ultimate_loadout().is_ok() {
                                     let _ = save.to_bytes();
-                                    status_toast =
-                                        Some("Added Ultimate P90, Cm Suit 2 & Super Tool Kit.");
+                                    status_toast = Some(
+                                        "Equipped Ultimate P90 & Cm Suit 2; added Super Tool Kit.",
+                                    );
                                 }
                                 ui.close_menu();
                             }
@@ -1362,12 +1418,21 @@ impl SaveEditorApp {
                                 save.apply_cheat_max_ammo();
                             }
                             ui.separator();
-                            ui.label("Bag Slots:");
+                            ui.label("Base Bag Slots:");
                             ui.add(
                                 egui::DragValue::new(&mut save.inventory_slot_count)
-                                    .range(10..=50),
-                            );
+                                    .range(10..=crate::disc::MAX_STAT_BAG_SLOTS),
+                            )
+                            .on_hover_text(BAG_SIZE_HELP);
                             ui.checkbox(&mut self.show_locked_inv_slots, "Show Locked (..50)");
+                            ui.separator();
+                            if ui
+                                .button("⇅ Sort Bag")
+                                .on_hover_text(SORT_HELP)
+                                .clicked()
+                            {
+                                save.sort_aya_bag();
+                            }
                         });
                     });
 
@@ -1807,6 +1872,14 @@ impl SaveEditorApp {
                         WayneSubTab::RegularItems,
                         "💊 Wayne's Regular Item Storage (100 Slots)",
                     );
+                    ui.separator();
+                    if ui
+                        .button("⇅ Sort Wayne's Storage")
+                        .on_hover_text(SORT_HELP)
+                        .clicked()
+                    {
+                        save.sort_wayne_storage();
+                    }
                 });
                 ui.add_space(4.0);
 
@@ -2169,8 +2242,7 @@ fn render_equipment_record_editor(
                         .clicked()
                     {
                         rec.item_id = meta.id;
-                        rec.icon_id = meta.default_icon_id.max(1);
-                        rec.kind = meta.default_kind;
+                        (rec.icon_id, rec.kind) = EquipmentRecord::icon_and_kind_for(meta.id);
                     }
                 }
             });
@@ -2314,6 +2386,9 @@ fn render_equipment_record_editor(
                     .width(260.0)
                     .selected_text(if cur_mod_id == 0 {
                         RichText::new("— Empty Slot —").color(TEXT_MUTED)
+                    } else if cur_mod_meta.id != cur_mod_id {
+                        RichText::new(format!("Unknown Effect #{} (kept as it is)", cur_mod_id))
+                            .color(ACCENT_AMBER)
                     } else {
                         RichText::new(format!(
                             "{} ({})",
@@ -2490,7 +2565,8 @@ fn render_tab_character_and_stats(ui: &mut egui::Ui, save: &mut PeSaveSlot) {
                             ui.end_row();
 
                             ui.label("Maximum HP:");
-                            ui.add(egui::Slider::new(&mut save.max_hp, 1..=999));
+                            ui.add(egui::Slider::new(&mut save.max_hp, 1..=999))
+                                .on_hover_text(MAX_HP_HELP);
                             ui.end_row();
 
                             ui.label("Total Experience (EXP):");
@@ -2509,11 +2585,15 @@ fn render_tab_character_and_stats(ui: &mut egui::Ui, save: &mut PeSaveSlot) {
                             );
                             ui.end_row();
 
-                            ui.label("Active Bag Capacity:");
+                            ui.label("Base Bag Capacity (armor can add up to 4):");
                             ui.add(
-                                egui::Slider::new(&mut save.inventory_slot_count, 10..=50)
-                                    .suffix(" slots"),
-                            );
+                                egui::Slider::new(
+                                    &mut save.inventory_slot_count,
+                                    10..=crate::disc::MAX_STAT_BAG_SLOTS,
+                                )
+                                .suffix(" slots"),
+                            )
+                            .on_hover_text(BAG_SIZE_HELP);
                             ui.end_row();
 
                             ui.label("PE Energy Bonus Pool:");

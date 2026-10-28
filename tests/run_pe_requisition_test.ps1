@@ -13,6 +13,7 @@ foreach ($path in @('include','mods/host','mods/pe_economy','third_party/psyz/ps
 }
 $compileArgs+=Join-Path $root 'tests/pe_mod_requisition_test.c'
 $compileArgs+=Join-Path $root 'mods/pe_economy/pe_requisition.c'
+$compileArgs+=Join-Path $root 'mods/host/pe_save.c'
 $compileArgs+=Join-Path $root 'mods/pe_economy/pe_requisition_menu.c'
 $compileArgs+='-o'; $compileArgs+=$output
 & $compiler @compileArgs

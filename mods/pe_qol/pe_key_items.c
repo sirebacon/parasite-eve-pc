@@ -1,18 +1,23 @@
 /* Key pocket from recomp pe_key_items.c, adapted to native query hooks.
  * Keys remain visible to story counts/removals even with a full bag or while
- * disabling the pocket. Nothing is parked outside the bag or save block. */
+ * disabling the pocket. Nothing is parked outside the bag or save block. With the
+ * whole mod off, a loaded save's pocket goes back into the bag (pe_key_release).
+ * Saved by the host as the "pe_qol.keys" record (host/pe_save.h). The recomp's "PKEY" block is
+ * still written at its old spot (the host's save window), so builds without the host's records
+ * keep the pocket; saves from before, or saved by such a build since, load from it. */
 #include <stdio.h>
 #include "pe_inventory.h"
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
+#include "pe_save.h"
 #include "pe_inventory_service.h"
 #include "pe1/battle_update.h"
 #include "pe1/text.h"
 
 enum { PE_KEY_MAX = 32, PE_KEY_TAIL = 0x1C90 + 0x200 };
 static struct { uint16_t count, pad, ids[PE_KEY_MAX]; } s_keys;
-_Static_assert(sizeof s_keys == 68, "recomp PKEY layout");
+_Static_assert(sizeof s_keys == 68, "the PKEY block of older saves holds 68 bytes of this state");
 static int s_enabled = 1, s_selected;
 static char s_name[64];
 
@@ -40,6 +45,19 @@ static int pe_keys_take(uint16_t id) {
 }
 static const PeKeysApi s_api = { pe_keys_take };
 
+/* Pocketed keys back into Aya's bag as space allows (one already there just leaves the pocket).
+ * Returns how many stay pocketed: the bag is full. */
+static int pe_keys_return(int limit) {
+    for (int k = 0; k < s_keys.count;) {
+        if (pe_bag_count(s_keys.ids[k])) { pe_remove(k); continue; }
+        int slot;
+        for (slot = 0; slot < limit && g_AyaInventoryItems[slot]; ++slot) {}
+        if (slot == limit) break;
+        g_AyaInventoryItems[slot] = s_keys.ids[k]; pe_remove(k);
+    }
+    return s_keys.count;
+}
+
 static void pe_key_tick(void) {
     int limit, empty = 0;
     if (!pe_game_loaded()) return;
@@ -56,13 +74,7 @@ static void pe_key_tick(void) {
         for (int i = 0; i < 50; ++i)
             if (pe_keys_take((uint16_t)g_AyaInventoryItems[i])) g_AyaInventoryItems[i] = 0;
     } else {
-        for (int k = 0; k < s_keys.count;) {
-            if (pe_bag_count(s_keys.ids[k])) { pe_remove(k); continue; }
-            int slot;
-            for (slot = 0; slot < limit && g_AyaInventoryItems[slot]; ++slot) {}
-            if (slot == limit) break;
-            g_AyaInventoryItems[slot] = s_keys.ids[k]; pe_remove(k);
-        }
+        pe_keys_return(limit);
     }
 }
 
@@ -81,7 +93,6 @@ static int pe_key_count(void *ctx, void *user) {
 static int pe_key_command(void *ctx, void *user) {
     PeHookInvCommand *c = ctx;
     (void)user;
-    if (c->command == 1117) { memset(&s_keys, 0, sizeof s_keys); s_selected = 0; return 0; }
     if (!pe_game_loaded()) return 0;
     int i = pe_find((unsigned)c->value);
     if (i < 0) return 0;
@@ -99,23 +110,42 @@ static int pe_key_command(void *ctx, void *user) {
     }
     return 0;
 }
+/* The old block too, for builds that only read that (host/pe_save.h, the window). */
 static int pe_key_save(void *ctx, void *user) {
     (void)user;
     pe_inventory_save(ctx, PE_KEY_TAIL, &s_keys, sizeof s_keys, 0x59454B50u, 0x6B657973u);
     return 0;
 }
-static int pe_key_load(void *ctx, void *user) {
-    (void)user;
-    memset(&s_keys, 0, sizeof s_keys); s_selected = 0;
-    if (!pe_inventory_load(ctx, PE_KEY_TAIL, &s_keys, sizeof s_keys, 0x59454B50u, 0x6B657973u)) return 0;
-    int valid = s_keys.count <= PE_KEY_MAX;
-    for (int i = 0; valid && i < s_keys.count; ++i) {
-        if (!pe_is_key(s_keys.ids[i])) valid = 0;
-        for (int j = 0; j < i; ++j) if (s_keys.ids[i] == s_keys.ids[j]) valid = 0;
+static void pe_key_reset(void *data) { (void)data; memset(&s_keys, 0, sizeof s_keys); s_selected = 0; }
+static int pe_key_check(void *data) {
+    (void)data;
+    s_selected = 0;
+    if (s_keys.count > PE_KEY_MAX) return 1;
+    for (int i = 0; i < s_keys.count; ++i) {
+        if (!pe_is_key(s_keys.ids[i])) return 1;
+        for (int j = 0; j < i; ++j) if (s_keys.ids[i] == s_keys.ids[j]) return 1;
     }
-    if (!valid) memset(&s_keys, 0, sizeof s_keys);
     return 0;
 }
+/* Saves from before: the "PKEY" block. */
+static int pe_key_upgrade(void *data, const uint8_t *old, unsigned size, unsigned version) {
+    (void)data;
+    if (version != 0 || size < 16 + sizeof s_keys) return 1;
+    return !pe_inventory_load(old, 0, &s_keys, sizeof s_keys, 0x59454B50u, 0x6B657973u);
+}
+/* The mod is off this session (host/pe_save.h): nothing would let story checks see pocketed keys, so
+ * they go back into the bag the moment the save loads. Keys that don't fit stay in the record. */
+static void pe_key_release(void *data) {
+    int left;
+    (void)data;
+    if (!s_keys.count) return;
+    left = pe_keys_return(pe_inventory_limit());
+    pe_mod_log("pe_qol", "mod off: pocketed keys returned to the bag, %d left (bag full)", left);
+    if (left) pe_toast("Key items didn't fit in the bag: turn quality of life back on to use them");
+}
+static const PeSaveRecord s_key_record = {
+    "pe_qol.keys", 1, &s_keys, sizeof s_keys, pe_key_check, pe_key_upgrade, pe_key_reset, pe_key_release,
+};
 static unsigned pe_key_rows(void) { return s_keys.count ? s_keys.count : 1; }
 static const char *pe_key_name(unsigned i) {
     if (i >= s_keys.count) return "Pocket empty";
@@ -143,5 +173,5 @@ void pe_key_items_register(const char *mod_id) {
     pe_hook_add(PE_HOOK_ITEM_COUNT, pe_key_count, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_INV_COMMAND, pe_key_command, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_SAVE_WRITE, pe_key_save, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_SAVE_READ, pe_key_load, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_save_register(&s_key_record);
 }

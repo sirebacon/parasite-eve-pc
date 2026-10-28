@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,6 +12,7 @@
 #include "pe1/battle_status.h"
 
 SaveRuntimeState g_SaveRuntimeState;
+Combatant *g_ActiveActor;
 BattleInitSlot g_BattleActionQueue[45];
 u8 g_BattleActionQueueCount, g_BattleGaugeCapLatch;
 int g_BattleModeState, g_MenuItemContextFlag;
@@ -75,6 +79,21 @@ static void finish(void) {
 }
 int main(void) {
     pe_atb_items_register("pe_rebalance");
+    /* Disabled means no changes to native gauge, input, tabs or HUD, at every phase. */
+    const unsigned gauges[] = {0, 4499, 4500, 8999, 9000};
+    for (unsigned i = 0; i < sizeof gauges / sizeof gauges[0]; ++i)
+        for (int phase = 0; phase < 4; ++phase) {
+            reset(); g_pe_half_enabled = 0; g_BattleModeState = phase;
+            aya.hpAlive = gauges[i]; aya.scaledOffense = 0;
+            g_FieldPadPressed = 0x280;
+            memset(g_BattleAtbGauges, 0x35, sizeof g_BattleAtbGauges);
+            Combatant before = aya;
+            RenderGouraudQuad hud[2]; memcpy(hud, g_BattleAtbGauges, sizeof hud);
+            update();
+            assert(!memcmp(&before, &aya, sizeof aya));
+            assert(!memcmp(hud, g_BattleAtbGauges, sizeof hud));
+            assert(g_FieldPadPressed == 0x280 && g_MenuItemContextFlag == 0x11F);
+        }
     reset(); aya.hpAlive = 4499; g_FieldPadPressed = 0x80; update(); assert(aya.hpAlive == 4499);
     reset(); borrow(6000); assert(g_BattleAtbGauges[0].r0 == 0x60);
     command(3); finish(); assert(aya.hpAlive == 1500);
@@ -84,6 +103,13 @@ int main(void) {
     aya.scaledOffense = 0; finish(); assert(aya.hpAlive == 6500 && aya.scaledOffense == 20);
     reset(); aya.hpAlive = 6000; g_FieldPadPressed = 0x80; update(); g_FieldPadPressed = 0; update();
     assert(aya.hpAlive == 6000 && g_MenuItemContextFlag == 0x11F); /* rejected menu */
+    reset(); borrow(6000);
+    for (int power = 0; power < 20; ++power) {
+        int enabled = 1; PeHookPowerAvailable query = {power, &enabled};
+        hooks[PE_HOOK_POWER_AVAILABLE](&query, NULL);
+        assert(enabled == (int)((g_pe_quick_mask >> power) & 1u));
+        enabled = 0; hooks[PE_HOOK_POWER_AVAILABLE](&query, NULL); assert(!enabled);
+    }
     reset(); borrow(6000); command(0x183 + 7); finish(); assert(aya.hpAlive == 1500); /* Quick Scan */
     reset(); borrow(6000); command(0x183 + 2); finish(); assert(aya.hpAlive == 0); /* full Heal 3 */
     aya.hpAlive = 2000; update(); assert(aya.hpAlive == 0);

@@ -2,11 +2,13 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <SDL3/SDL.h>
 #include <psyz/audio.h>
+#include <psyz/gpu.h>
 #include <psyz/overlay_sdl3.h>
 #include <psyz/system.h>
 #include <psyz/video.h>
@@ -14,11 +16,17 @@
 #include "pe1/boot_disc_check.h"
 #include "pe1/boot_display.h"
 #include "pe1/boot_services.h"
+#include "pe1/asset_table.h"
+#include "pe1/aya.h"
+#include "pe1/crash_report.h"
+#include "pe1/game_state_types.h"
 #include "pe1/field_bg_load.h"
 #include "pe1/game_state.h"
 #include "pe1/game_timers.h"
 #include "pe1/pad_state.h"
 #include "pe1/psyq_gpu.h"
+#include "pe1/save.h"
+#include "pe1/save_tail_state.h"
 #include "pe1/scene_dispatch.h"
 #include "pe_hooks.h"
 
@@ -33,20 +41,51 @@ static struct {
     int geometry_correction;
     int antialiasing;
     int model_filtering;
+    int widescreen;
     int fullscreen;
-    int keys[16];
-    int buttons[16];
+    /* 2..PSYZ_SPEED_MAX, used while the speed binding is held */
+    unsigned speed_factor;
+    unsigned analog_run_threshold;
+    /* 16 pad buttons, then the speed hold (unbound by default) */
+    int keys[17];
+    int buttons[17];
     char discs[2][4096];
     char user_file[4096];
     int enabled;
 } host_options;
 
-static const char *const host_button_names[16] = {
+#define HOST_BINDING_COUNT 17
+#define HOST_SPEED_BINDING 16
+#define HOST_ANALOG_RUN_ROW (HOST_BINDING_COUNT + 1)
+#define HOST_UNBOUND_KEY SDL_SCANCODE_UNKNOWN
+#define HOST_UNBOUND_BUTTON -1
+
+static const char *const host_button_names[HOST_BINDING_COUNT] = {
     "L2", "R2", "L1", "R1",
     "Triangle", "Circle", "Cross", "Square",
     "Select", "L3", "R3", "Start",
-    "Up", "Right", "Down", "Left"
+    "Up", "Right", "Down", "Left",
+    "Speed"
 };
+
+/* speed_factor while the speed binding is held; every start is 1x. */
+static unsigned host_speed = 1;
+
+static void Host_SetSpeed(unsigned speed) {
+    if (speed != host_speed || speed != Psyz_VideoGetSpeed()) {
+        host_speed = speed;
+        Psyz_VideoSetSpeed(speed);
+    }
+}
+
+static int host_speed_key_held;
+static struct { SDL_JoystickID id; int held; } host_speed_pads[16];
+
+static void Host_ResetSpeedHold(void) {
+    host_speed_key_held = 0;
+    memset(host_speed_pads, 0, sizeof(host_speed_pads));
+    Host_SetSpeed(1);
+}
 
 typedef enum HostSettingsPage {
     HOST_PAGE_GRAPHICS = 0,
@@ -143,13 +182,22 @@ static int Host_ParseOptionValue(const char *section, const char *key, char *val
         errno = 0;
         long parsed = strtol(value, &end, 10);
         end = Host_Trim(end);
-        if (errno || end == value || (*end && *end != '#') || parsed < 0 || parsed > INT_MAX) {
+        if (errno || end == value || (*end && *end != '#') || parsed < -1 || parsed > INT_MAX) {
             return 0;
         }
         v = (int)parsed;
     }
+    /* -1 only marks an unbound controller speed binding. */
+    if (v < 0 && (strcmp(section, "controller") || strcmp(key, host_button_names[HOST_SPEED_BINDING]))) {
+        return 0;
+    }
 
-    if (!strcmp(section, "graphics")) {
+    if (!strcmp(section, "controls")) {
+        if (!strcmp(key, "field_run_threshold")) {
+            if (v > 100) return 0;
+            host_options.analog_run_threshold = (unsigned)v;
+        }
+    } else if (!strcmp(section, "graphics")) {
         if (!strcmp(key, "internal_resolution")) {
             if (v < 1 || v > 8) {
                 return 0;
@@ -176,6 +224,9 @@ static int Host_ParseOptionValue(const char *section, const char *key, char *val
         } else if (!strcmp(key, "model_filtering")) {
             if (v > 1) return 0;
             host_options.model_filtering = v;
+        } else if (!strcmp(key, "widescreen")) {
+            if (v > 1) return 0;
+            host_options.widescreen = v;
         } else if (!strcmp(key, "geometry_correction")) {
             if (v > 1) {
                 return 0;
@@ -187,16 +238,23 @@ static int Host_ParseOptionValue(const char *section, const char *key, char *val
             return 0;
         }
         host_options.volume = (unsigned)v;
+    } else if (!strcmp(section, "game") && !strcmp(key, "speed")) {
+        if (v < 2 || v > PSYZ_SPEED_MAX) {
+            return 0;
+        }
+        host_options.speed_factor = (unsigned)v;
     } else if (!strcmp(section, "keyboard") || !strcmp(section, "controller")) {
-        for (unsigned i = 0; i < 16; ++i) {
+        for (unsigned i = 0; i < HOST_BINDING_COUNT; ++i) {
             if (!strcmp(key, host_button_names[i])) {
+                int speed = i == HOST_SPEED_BINDING;
                 if (!strcmp(section, "keyboard")) {
-                    if (v <= SDL_SCANCODE_UNKNOWN || v >= SDL_SCANCODE_COUNT || v == SDL_SCANCODE_ESCAPE) {
+                    if (!(speed && v == HOST_UNBOUND_KEY) &&
+                        (v <= SDL_SCANCODE_UNKNOWN || v >= SDL_SCANCODE_COUNT || v == SDL_SCANCODE_ESCAPE)) {
                         return 0;
                     }
                     host_options.keys[i] = v;
                 } else {
-                    if (v > SDL_GAMEPAD_BUTTON_COUNT + 1) {
+                    if (!(speed && v == HOST_UNBOUND_BUTTON) && (v < 0 || v > SDL_GAMEPAD_BUTTON_COUNT + 1)) {
                         return 0;
                     }
                     host_options.buttons[i] = v;
@@ -289,9 +347,14 @@ static int Host_SaveOptions(void) {
         "disable_dithering = %s\n"
         "geometry_correction = %s\n"
         "antialiasing = %s\n"
-        "model_filtering = %s\n\n"
+        "model_filtering = %s\n"
+        "widescreen = %s\n\n"
         "[audio]\n"
         "volume = %u\n\n"
+        "[game]\n"
+        "speed = %u\n\n"
+        "[controls]\n"
+        "field_run_threshold = %u\n\n"
         "[discs]\n"
         "disc1 = ",
         host_options.scale,
@@ -301,18 +364,21 @@ static int Host_SaveOptions(void) {
         host_options.geometry_correction ? "true" : "false",
         host_options.antialiasing ? "true" : "false",
         host_options.model_filtering ? "true" : "false",
-        host_options.volume
+        host_options.widescreen ? "true" : "false",
+        host_options.volume,
+        host_options.speed_factor,
+        host_options.analog_run_threshold
     );
     Host_WriteString(file, host_options.discs[0]);
     fputs("\ndisc2 = ", file);
     Host_WriteString(file, host_options.discs[1]);
 
     fputs("\n\n[keyboard]\n", file);
-    for (unsigned i = 0; i < 16; ++i) {
+    for (unsigned i = 0; i < HOST_BINDING_COUNT; ++i) {
         fprintf(file, "%s = %d\n", host_button_names[i], host_options.keys[i]);
     }
     fputs("\n[controller]\n", file);
-    for (unsigned i = 0; i < 16; ++i) {
+    for (unsigned i = 0; i < HOST_BINDING_COUNT; ++i) {
         fprintf(file, "%s = %d\n", host_button_names[i], host_options.buttons[i]);
     }
 
@@ -336,6 +402,8 @@ static int Host_CardPath(char *dst, const char *src, int capacity) {
         return -1;
     }
     const char *slash = strrchr(host_options.user_file, '/');
+    const char *backslash = strrchr(host_options.user_file, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
     if (!slash) {
         return -1;
     }
@@ -351,20 +419,130 @@ static int Host_CardPath(char *dst, const char *src, int capacity) {
         host_options.user_file,
         src
     );
-    if (n < 0 || n >= capacity || !SDL_CreateDirectory(dst)) {
-        dst[0] = '\0';
-        return 0;
+    if (n < 0 || n >= capacity) { dst[0] = '\0'; return 0; }
+#ifdef _WIN32
+    /* SDL's Win32 calls also need the extended prefix for long paths. Leave
+     * short portable paths unchanged, including their usual slash spelling. */
+    if (n >= 200 && dst[1] == ':' && (dst[2] == '/' || dst[2] == '\\')) {
+        if (n + 4 >= capacity) { dst[0] = '\0'; return 0; }
+        memmove(dst + 4, dst, n + 1); memcpy(dst, "\\\\?\\", 4); n += 4;
+    } else if (n >= 200 && dst[0] == '\\' && dst[1] == '\\' && strncmp(dst, "\\\\?\\", 4)) {
+        if (n + 6 >= capacity) { dst[0] = '\0'; return 0; }
+        memmove(dst + 8, dst + 2, n - 1); memcpy(dst, "\\\\?\\UNC\\", 8); n += 6;
     }
+    if (!strncmp(dst, "\\\\?\\", 4)) {
+        for (char *p = dst; *p; ++p) if (*p == '/') *p = '\\';
+        /* SDL's recursive mkdir treats a leading UNC separator as an empty
+         * parent. Create ancestors individually, preserving the volume root. */
+        char *parent = dst + 4;
+        if (!strncmp(parent, "UNC\\", 4)) {
+            parent = strchr(parent + 4, '\\');
+            if (parent) parent = strchr(parent + 1, '\\');
+            if (parent) ++parent;
+        } else if (strlen(parent) >= 3 && parent[1] == ':') parent += 3;
+        for (char *p = parent; p && *p; ++p) if (*p == '\\') {
+            *p = '\0';
+            int created = SDL_CreateDirectory(dst);
+            *p = '\\';
+            if (!created) { dst[0] = '\0'; return 0; }
+        }
+    }
+#endif
+    if (!SDL_CreateDirectory(dst)) { dst[0] = '\0'; return 0; }
 
     const char *name = src + 5;
     if (*name == '*') {
         name = "";
     }
-    int added = snprintf(dst + n, (size_t)(capacity - n), "/%s", name);
+    char separator = '/';
+#ifdef _WIN32
+    if (!strncmp(dst, "\\\\?\\", 4)) separator = '\\';
+#endif
+    int added = snprintf(dst + n, (size_t)(capacity - n), "%c%s", separator, name);
     if (added < 0 || added >= capacity - n) {
         dst[0] = '\0';
     }
     return 0;
+}
+
+/* Import once, retaining every legacy file and never replacing a newer card.
+ * A completed-import marker prevents deleted slots reappearing at next launch. */
+typedef struct HostCardImport {
+    int ok;
+    unsigned count;
+    char *created[128];
+} HostCardImport;
+
+static SDL_EnumerationResult SDLCALL Host_ImportCard(void *userdata, const char *dirname, const char *name) {
+    HostCardImport *import = userdata;
+    if (strlen(name) != 20 || strncmp(name, "BASLUS-00662", 11)) return SDL_ENUM_CONTINUE;
+    char source[8192], target[4096], device[64], temporary[4160];
+    snprintf(source, sizeof(source), "%s%s", dirname, name);
+    SDL_PathInfo info;
+    if (!SDL_GetPathInfo(source, &info) || info.type != SDL_PATHTYPE_FILE || info.size != 8192)
+        return SDL_ENUM_CONTINUE;
+    /* Port is encoded by the legacy directory supplied to EnumerateDirectory. */
+    size_t length = strlen(dirname);
+    unsigned port = length >= 4 && dirname[length - 3] == '1';
+    snprintf(device, sizeof(device), "bu%u0:%s", port, name);
+    Host_CardPath(target, device, sizeof(target));
+    if (!*target) { import->ok = 0; return SDL_ENUM_CONTINUE; }
+    if (SDL_GetPathInfo(target, &info)) return SDL_ENUM_CONTINUE;
+    if (import->count >= 128) { import->ok = 0; return SDL_ENUM_CONTINUE; }
+    size_t bytes = 0;
+    void *data = SDL_LoadFile(source, &bytes);
+    if (!data || bytes != 8192) { SDL_free(data); import->ok = 0; return SDL_ENUM_CONTINUE; }
+    const char *last = strrchr(target, '/');
+    const char *backslash = strrchr(target, '\\');
+    if (backslash && (!last || backslash > last)) last = backslash;
+    snprintf(temporary, sizeof(temporary), "%.*s.pe-save-import-%llu.tmp",
+             last ? (int)(last - target + 1) : 0, target, (unsigned long long)SDL_GetTicksNS());
+    SDL_IOStream *io = SDL_IOFromFile(temporary, "wbx");
+    if (!io) { SDL_free(data); import->ok = 0; return SDL_ENUM_CONTINUE; }
+    int written = SDL_WriteIO(io, data, bytes) == bytes && SDL_FlushIO(io);
+    if (!SDL_CloseIO(io)) written = 0;
+    SDL_free(data);
+    if (!written || !SDL_RenamePath(temporary, target)) {
+        SDL_RemovePath(temporary);
+        import->ok = 0;
+    } else {
+        char *created = SDL_strdup(target);
+        if (!created) { SDL_RemovePath(target); import->ok = 0; }
+        else import->created[import->count++] = created;
+    }
+    return SDL_ENUM_CONTINUE;
+}
+
+static int Host_InstallCardPaths(const char *base) {
+    char marker[4096], card[4096];
+    if (Host_CardPath(card, "bu00:*", sizeof(card)) || !*card) return 0;
+    snprintf(marker, sizeof(marker), "%.*s.legacy-imported", (int)strlen(card) - 5, card);
+    SDL_PathInfo info;
+    if (!SDL_GetPathInfo(marker, &info)) {
+        HostCardImport import = {.ok = 1};
+        char *cwd = SDL_GetCurrentDirectory();
+        const char *roots[] = {cwd, base};
+        for (unsigned root = 0; root < 2; ++root) if (roots[root]) {
+            for (unsigned port = 0; port < 2; ++port) {
+                char source[8192];
+                snprintf(source, sizeof(source), "%sbu%u0", roots[root], port);
+                if (SDL_GetPathInfo(source, &info) && info.type == SDL_PATHTYPE_DIRECTORY &&
+                    !SDL_EnumerateDirectory(source, Host_ImportCard, &import)) import.ok = 0;
+            }
+        }
+        SDL_free(cwd);
+        if (import.ok && !SDL_SaveFile(marker, "", 0)) {
+            SDL_RemovePath(marker);
+            import.ok = 0;
+        }
+        for (unsigned i = 0; i < import.count; ++i) {
+            if (!import.ok) SDL_RemovePath(import.created[i]);
+            SDL_free(import.created[i]);
+        }
+        if (!import.ok) return 0;
+    }
+    Psyz_AdjustPathCB(Host_CardPath);
+    return 1;
 }
 
 static void Host_InitOptions(int enabled) {
@@ -373,12 +551,17 @@ static void Host_InitOptions(int enabled) {
     host_options.geometry_correction = 1;
     host_options.antialiasing = 0;
     host_options.model_filtering = 0;
+    host_options.widescreen = 0;
     host_options.volume = 100;
+    host_options.speed_factor = 2;
+    host_options.analog_run_threshold = 85;
     Boot_InitHostBindings();
     for (unsigned i = 0; i < 16; ++i) {
         host_options.keys[i] = Psyz_GetKeyboardBinding_SDL3(i);
         host_options.buttons[i] = Psyz_GetGamepadBinding_SDL3(i);
     }
+    host_options.keys[HOST_SPEED_BINDING] = HOST_UNBOUND_KEY;
+    host_options.buttons[HOST_SPEED_BINDING] = HOST_UNBOUND_BUTTON;
     if (!enabled) {
         return;
     }
@@ -433,20 +616,20 @@ static void Host_InitOptions(int enabled) {
     if (*host_options.user_file) {
         Host_LoadOptions(host_options.user_file);
     }
-#ifdef __APPLE__
-    if (base && strstr(base, ".app/Contents/") && *host_options.user_file) {
-        Psyz_AdjustPathCB(Host_CardPath);
+    if (*host_options.user_file && !Host_InstallCardPaths(base)) {
+        fprintf(stderr, "Cannot prepare user memory cards; legacy cards remain in use.\n");
     }
-#endif
 }
 
 static void Host_ApplyOptions(SDL_Window *window) {
+    g_FieldAnalogRunThreshold = host_options.analog_run_threshold;
     Psyz_VideoSetInternalResolution(host_options.scale);
-    Psyz_VideoSetAspectMode((PsyzAspectMode)host_options.aspect);
+    Psyz_VideoSetAspectMode(host_options.widescreen ? PSYZ_ASPECT_DISPLAY : (PsyzAspectMode)host_options.aspect);
     Psyz_VideoSetDitheringMode((PsyzDitherMode)host_options.dither);
     Psyz_VideoSetGeometryCorrection(host_options.geometry_correction != 0);
     Psyz_VideoSetAntialiasing(host_options.antialiasing != 0);
     Psyz_VideoSetModelFiltering(host_options.model_filtering != 0);
+    Psyz_VideoSetWidescreen(host_options.widescreen != 0);
     Psyz_AudioSetOutputVolume(host_options.volume);
     for (unsigned i = 0; i < 16; ++i) {
         Psyz_SetKeyboardBinding_SDL3(i, (SDL_Scancode)host_options.keys[i]);
@@ -780,17 +963,43 @@ static void Host_ApplySettingsAction(
                                 ? "Image added and remembered."
                                 : "No image added.";
         }
+    } else if (state->page == HOST_PAGE_CONTROLS && state->row == HOST_ANALOG_RUN_ROW) {
+        int threshold = (int)host_options.analog_run_threshold + action * 5;
+        if (threshold < 0) threshold = 0;
+        if (threshold > 100) threshold = 100;
+        host_options.analog_run_threshold = (unsigned)threshold;
     } else if (state->row == 0) {
         state->bind_device = (state->bind_device == HOST_BIND_CONTROLLER)
                                  ? HOST_BIND_KEYBOARD
                                  : HOST_BIND_CONTROLLER;
+    } else if (state->row == HOST_SPEED_BINDING + 1 && !activate_only) {
+        int factor = (int)host_options.speed_factor + action;
+        if (factor < 2 || factor > PSYZ_SPEED_MAX) {
+            return;
+        }
+        host_options.speed_factor = (unsigned)factor;
     } else if (activate_only) {
         state->capturing_binding = 1;
+        state->status = NULL;
     } else {
         return;
     }
     state->dirty = 1;
     Host_ApplyOptions(game);
+}
+
+/* Only the speed binding can be left unbound. */
+static void Host_ClearSpeedBinding(HostOverlayState *state) {
+    if (state->page != HOST_PAGE_CONTROLS || state->row != HOST_SPEED_BINDING + 1) {
+        return;
+    }
+    if (state->bind_device == HOST_BIND_KEYBOARD) {
+        host_options.keys[HOST_SPEED_BINDING] = HOST_UNBOUND_KEY;
+    } else {
+        host_options.buttons[HOST_SPEED_BINDING] = HOST_UNBOUND_BUTTON;
+    }
+    state->status = NULL;
+    state->dirty = 1;
 }
 
 /* The headless control console uses the same actions as the actual menu. */
@@ -852,10 +1061,16 @@ static void Host_ProcessSettingsPointer(
         state->open = 0;
         return;
     }
+    if (state->page == HOST_PAGE_CONTROLS && hitRow == HOST_SPEED_BINDING + 1 &&
+        x < (float)(OVERLAY_PAD + OVERLAY_SPEED_STEP_W)) {
+        int action = x < (float)(OVERLAY_PAD + OVERLAY_SPEED_STEP_CENTRE) ? -1 : 1;
+        Host_ApplySettingsAction(state, action, 0, game);
+        return;
+    }
     if (hitRow >= 0) {
         int pureCount = Host_SettingsPureRowCount(state->page);
         int isStepper = hitRow < pureCount &&
-                        !(state->page == HOST_PAGE_CONTROLS && hitRow >= 1) &&
+                        !(state->page == HOST_PAGE_CONTROLS && hitRow >= 1 && hitRow != HOST_ANALOG_RUN_ROW) &&
                         state->page != HOST_PAGE_IMAGES;
         int action = isStepper ? (x < OverlayValueCentre() ? -1 : 1) : 1;
         Host_ApplySettingsAction(state, action, !isStepper, game);
@@ -1004,18 +1219,28 @@ static void Host_ProcessSettingsEvent(
         }
         if (binding >= 0 &&
             (state->bind_device == HOST_BIND_CONTROLLER || binding > SDL_SCANCODE_UNKNOWN)) {
-            int *bindings = (state->bind_device == HOST_BIND_KEYBOARD)
-                                ? host_options.keys
-                                : host_options.buttons;
-            /* Swap duplicates, keeping every original button reachable. */
-            for (int i = 0; i < 16; ++i) {
-                if (i != state->row - 1 && bindings[i] == binding) {
-                    bindings[i] = bindings[state->row - 1];
-                }
-            }
-            bindings[state->row - 1] = binding;
+            int keyboard = state->bind_device == HOST_BIND_KEYBOARD;
+            int *bindings = keyboard ? host_options.keys : host_options.buttons;
+            int target = state->row - 1;
+            int unbound = keyboard ? HOST_UNBOUND_KEY : HOST_UNBOUND_BUTTON;
             state->capturing_binding = 0;
             state->dirty = 1;
+            /* Swap duplicates, keeping every original button reachable. An
+             * unbound speed binding has nothing to give back in a swap. */
+            for (int i = 0; i < HOST_BINDING_COUNT; ++i) {
+                if (i != target && bindings[i] == binding && bindings[target] == unbound) {
+                    static char message[64];
+                    snprintf(message, sizeof(message), "Already used by %s.", host_button_names[i]);
+                    state->status = message;
+                    return;
+                }
+            }
+            for (int i = 0; i < HOST_BINDING_COUNT; ++i) {
+                if (i != target && bindings[i] == binding) {
+                    bindings[i] = bindings[target];
+                }
+            }
+            bindings[target] = binding;
             Host_ApplyOptions(game);
         }
         return;
@@ -1068,6 +1293,10 @@ static void Host_ProcessSettingsEvent(
                 Host_ApplySettingsAction(state, 1, 1, game);
             }
             break;
+        case SDL_SCANCODE_DELETE:
+        case SDL_SCANCODE_BACKSPACE:
+            Host_ClearSpeedBinding(state);
+            break;
         default:
             break;
         }
@@ -1076,6 +1305,9 @@ static void Host_ProcessSettingsEvent(
         case SDL_GAMEPAD_BUTTON_EAST:
         case SDL_GAMEPAD_BUTTON_START:
             state->open = 0;
+            break;
+        case SDL_GAMEPAD_BUTTON_WEST:
+            Host_ClearSpeedBinding(state);
             break;
         case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
             Host_SwitchSettingsPage(state, state->page - 1);
@@ -1155,6 +1387,8 @@ static void Host_Settings(SDL_Window *game) {
     Psyz_PauseHostClock_SDL3(true);
     int paused = Psyz_AudioIsPaused();
     Psyz_AudioPause();
+    /* The panel draws at normal speed; the menu takes the hold's release. */
+    Host_ResetSpeedHold();
 
     s_overlayState = (HostOverlayState){
         .open = 1,
@@ -1232,6 +1466,7 @@ static int Host_ConfirmMovieSkip(void) {
 
     Psyz_PauseHostClock_SDL3(true);
     Psyz_AudioPause();
+    Host_ResetSpeedHold();
     if (game != NULL && s_overlayGpuDevice != NULL) {
         s_overlayState = (HostOverlayState){
             .open = 1,
@@ -1298,10 +1533,60 @@ static void Host_PauseForFocus(SDL_Window *game) {
     }
 
     SDL_ResetKeyboard();
+    /* A release while unfocused is never seen: drop back to 1x. */
+    Host_ResetSpeedHold();
     Psyz_PauseHostClock_SDL3(false);
     if (!paused) {
         Psyz_AudioUnpause();
     }
+}
+
+/* The game runs at speed_factor while the bound key, button or trigger is held. */
+static bool Host_SpeedHoldEvent(const SDL_Event *event) {
+    int key = host_options.keys[HOST_SPEED_BINDING];
+    int button = host_options.buttons[HOST_SPEED_BINDING];
+    SDL_JoystickID device = 0;
+    int held = 0, consumed = 0;
+    /* The Mods panel can reset PsyZ's speed while consuming release events. */
+    if (Psyz_VideoGetSpeed() != host_speed) Host_ResetSpeedHold();
+    if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
+        if (key == HOST_UNBOUND_KEY || (int)event->key.scancode != key) return false;
+        if (!event->key.repeat) host_speed_key_held = event->type == SDL_EVENT_KEY_DOWN;
+        consumed = 1;
+    } else if (event->type == SDL_EVENT_GAMEPAD_REMOVED) {
+        for (unsigned i = 0; i < 16; ++i)
+            if (host_speed_pads[i].id == event->gdevice.which)
+                host_speed_pads[i].id = host_speed_pads[i].held = 0;
+    } else if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+               event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        if (button < 0 || event->gbutton.button != button) return false;
+        device = event->gbutton.which;
+        held = event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        consumed = 1;
+    } else if (event->type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+        int axis = button == SDL_GAMEPAD_BUTTON_COUNT ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER
+                 : button == SDL_GAMEPAD_BUTTON_COUNT + 1 ? SDL_GAMEPAD_AXIS_RIGHT_TRIGGER : -1;
+        if (axis < 0 || event->gaxis.axis != axis) return false;
+        device = event->gaxis.which;
+        int was_held = 0;
+        for (unsigned i = 0; i < 16; ++i)
+            if (host_speed_pads[i].id == device) was_held = host_speed_pads[i].held;
+        held = event->gaxis.value > (was_held ? 8000 : 16000);
+    } else return false;
+    if (device) {
+        unsigned slot;
+        for (slot = 0; slot < 16; ++slot) if (host_speed_pads[slot].id == device) break;
+        if (slot == 16 && held)
+            for (slot = 0; slot < 16; ++slot) if (!host_speed_pads[slot].id) break;
+        if (slot < 16) {
+            host_speed_pads[slot].id = held ? device : 0;
+            host_speed_pads[slot].held = held;
+        }
+    }
+    int any = host_speed_key_held;
+    for (unsigned i = 0; i < 16; ++i) any |= host_speed_pads[i].held;
+    Host_SetSpeed(any ? host_options.speed_factor : 1);
+    return consumed; /* axis and removal events still reach the pad backend */
 }
 
 static bool Host_SettingsEvent(const SDL_Event *event) {
@@ -1329,7 +1614,7 @@ static bool Host_SettingsEvent(const SDL_Event *event) {
         }
         return true;
     }
-    return false;
+    return Host_SpeedHoldEvent(event);
 }
 
 static void Host_InstallSettingsOverlay(void) {
@@ -1343,12 +1628,209 @@ static void Host_InstallSettingsOverlay(void) {
 #define STATE_FLAG_READY 0x00000100U
 
 #ifndef PE_HOST_SETTINGS_TEST
+/* Appends to a crash report section; text past its end is dropped. */
+static void Host_CrashAppend(char *out, size_t size, size_t *used, const char *format, ...) {
+    if (*used >= size) return;
+    va_list args;
+    va_start(args, format);
+    const int n = vsnprintf(out + *used, size - *used, format, args);
+    va_end(args);
+    if (n > 0) *used += (size_t)n < size - *used ? (size_t)n : size - *used - 1;
+}
+
+/* File name only: reports are shared, and folders can hold the user's name. */
+static const char *Host_CrashFileName(const char *path) {
+    const char *name = path;
+    for (const char *s = path; *s; ++s) {
+        if (*s == '/' || *s == '\\') name = s + 1;
+    }
+    return *name ? name : "(not set)";
+}
+
+/* The room number, decoded as mods/host/pe_game.c does (-1: the token is not
+ * a room). Only reads values. */
+static int Host_CrashRoom(void) {
+    const unsigned token = (unsigned)g_SceneDispatchToken;
+    int room = 0;
+    for (int i = 2; i < 5 && room >= 0; ++i) {
+        const char c = (char)g_Base32CharTable[(token >> ((5 - i) * 5 + 2)) & 0x1Fu];
+        room = c >= '0' && c <= '9' ? room * 10 + (c - '0') : -1;
+    }
+    return room;
+}
+
+/* Crash report: what the game was doing and every desktop setting. Runs
+ * inside the crash handler, so it only reads values. */
+static void Host_DescribeCrash(char *out, size_t size) {
+    const unsigned token = (unsigned)g_SceneDispatchToken;
+    const int room = Host_CrashRoom();
+    const unsigned speed = Psyz_VideoGetSpeed();
+    size_t used = 0;
+    out[0] = 0;
+    Host_CrashAppend(out, size, &used,
+                     "Game: room %d, scene token 0x%08X (current 0x%08X), disc %u, VBlank %u, game frame %u\r\n"
+                     "Game state: flags 0x%08X / 0x%08X, %s\r\n"
+                     "Aya: HP %u/%u, level %u, EXP %u\r\n"
+                     "Story: day %d on the save card (progress %u), story day %d (next %d), day flags 0x%02X\r\n",
+                     room, token, (unsigned)g_SceneDispatchCur, (unsigned)g_PeImageMountFlags,
+                     (unsigned)g_BootHostVBlankCount, g_GlobalFrameCounter[0],
+                     (unsigned)g_GameStateFlags, (unsigned)g_GameStateFlagsWord,
+                     (g_GameStateFlags & 2) ? "in battle" : "not in battle",
+                     (unsigned)g_AyaSaveState.current_hp, (unsigned)g_AyaSaveState.max_hp,
+                     (unsigned)g_AyaSaveState.level + 1u, (unsigned)g_AyaSaveState.total_exp,
+                     Save_ClassifyPlaytime((int)g_PlayTimeFrameCounter), (unsigned)g_PlayTimeFrameCounter,
+                     g_GameState.current_story_day, g_GameState.pending_story_day,
+                     (unsigned)g_GameState.story_day_flags);
+    if (speed > 1) {
+        Host_CrashAppend(out, size, &used, "Speed-up: ON at the crash, the game was running at %ux\r\n", speed);
+    } else {
+        Host_CrashAppend(out, size, &used, "Speed-up: off at the crash (normal speed)\r\n");
+    }
+
+    /* The same names as the settings screen (settings_overlay.h). */
+    Host_CrashAppend(out, size, &used,
+                     "\r\n== Settings ==\r\n"
+                     "Settings file: %s\r\n"
+                     "Graphics: render resolution %ux (renderer %ux), fullscreen %s, aspect ratio %s, "
+                     "dithering %s, geometry correction %s, antialiasing %s, model textures %s\r\n"
+                     "Audio: master volume %u%%\r\n"
+                     "Controls: speed-up %ux while held, field run threshold %u\r\n"
+                     "Discs: disc 1 %s, disc 2 %s\r\n",
+                     host_options.enabled && *host_options.user_file ? Host_CrashFileName(host_options.user_file)
+                                                                      : "none (defaults, not saved)",
+                     host_options.scale, Psyz_VideoGetInternalResolution(), kSwitchNames[host_options.fullscreen != 0],
+                     kAspectNames[host_options.aspect != 0], kDitherNames[host_options.dither != 0],
+                     kSwitchNames[host_options.geometry_correction != 0], kAntialiasNames[host_options.antialiasing != 0],
+                     kFilterNames[host_options.model_filtering != 0], host_options.volume, host_options.speed_factor,
+                     host_options.analog_run_threshold, Host_CrashFileName(host_options.discs[0]),
+                     Host_CrashFileName(host_options.discs[1]));
+    Host_CrashAppend(out, size, &used, "Keyboard:");
+    for (unsigned i = 0; i < HOST_BINDING_COUNT; ++i) {
+        const int key = host_options.keys[i];
+        const char *name = key != HOST_UNBOUND_KEY ? SDL_GetScancodeName((SDL_Scancode)key) : NULL;
+        Host_CrashAppend(out, size, &used, "%s %s = %s", i ? "," : "", host_button_names[i],
+                         name && *name ? name : "none");
+    }
+    Host_CrashAppend(out, size, &used, "\r\nController:");
+    for (unsigned i = 0; i < HOST_BINDING_COUNT; ++i) {
+        const int button = host_options.buttons[i];
+        const char *name = button == SDL_GAMEPAD_BUTTON_COUNT       ? "Left trigger"
+                           : button == SDL_GAMEPAD_BUTTON_COUNT + 1 ? "Right trigger"
+                           : button != HOST_UNBOUND_BUTTON ? SDL_GetGamepadStringForButton((SDL_GamepadButton)button)
+                                                           : NULL;
+        Host_CrashAppend(out, size, &used, "%s %s = %s", i ? "," : "", host_button_names[i],
+                         name && *name ? name : "none");
+    }
+    Host_CrashAppend(out, size, &used, "\r\n");
+}
+
+/* Crash report room snapshot: what a save made at the start of the current
+ * room would hold, file offsets 0x100 up to the checksum at 0x1C8C (Aya,
+ * items, key items, equipment, storage, then script variables, day and Aya's
+ * battle record), and with mods the save's free tail from 0x1C90 (each mod's
+ * per-save data, filled by the mods' save write handlers into a blank card
+ * block; its layout depends on the mods loaded). Taken whole each time a room
+ * starts outside a battle, on the game thread, so a save can be rebuilt from
+ * any report and the crash handler only copies it out. Two copies: a crash
+ * while one is being taken reports the other, never a part of one.
+ * Save_BuildHeader fills the header fields as the save menu does; the game's
+ * own copy of them is put back afterwards. Save_SerializeTailData refuses when
+ * Aya's two record links are not the saved records, which only a damaged
+ * record does, so those links are set back for the copy and restored. */
+typedef struct HostRoomSnapshot {
+    u8 data[0x12E4 + 0x8A8];
+#ifdef PE_MODS
+    u8 card[0x2000];
+    int have_mod_tail;
+#endif
+    int room, story_day, links_fixed;
+    u32 vblank;
+} HostRoomSnapshot;
+
+static HostRoomSnapshot host_room_snapshots[2];
+static SDL_AtomicInt host_room_snapshot = {-1}; /* the complete copy, -1: none yet */
+
+static void Host_TakeRoomSnapshot(void) {
+    static SaveRuntimeState header;
+    if (g_GameStateFlags & 2) return; /* a battle: the room's own snapshot stays */
+    HostRoomSnapshot *snapshot = &host_room_snapshots[SDL_GetAtomicInt(&host_room_snapshot) == 0];
+
+    memcpy(&header, &g_SaveRuntimeState, sizeof(header));
+    Save_BuildHeader();
+    memcpy(snapshot->data, &g_SaveRuntimeState, 0x12E4);
+    memcpy(&g_SaveRuntimeState, &header, sizeof(header));
+
+    u8 *cursor = g_SaveIoCursor;
+    BattleStateTail *action = g_AyaBattleState.action;
+    BattleAttributes *attributes = g_AyaBattleState.attributes;
+    snapshot->links_fixed = (action && action != &g_SavedBattleStateTail) ||
+                            (attributes && attributes != &g_BattleEquipStateBlock);
+    if (snapshot->links_fixed) {
+        g_AyaBattleState.action = &g_SavedBattleStateTail;
+        g_AyaBattleState.attributes = &g_BattleEquipStateBlock;
+    }
+    g_SaveIoCursor = snapshot->data + 0x12E4;
+    const int have_tail = Save_SerializeTailData() == 0;
+    g_SaveIoCursor = cursor;
+    g_AyaBattleState.action = action;
+    g_AyaBattleState.attributes = attributes;
+    if (!have_tail) return;
+#ifdef PE_MODS
+    memset(snapshot->card, 0, sizeof(snapshot->card));
+    snapshot->have_mod_tail = pe_mod_snapshot_save_tail(snapshot->card) == 0;
+#endif
+    snapshot->room = Host_CrashRoom();
+    snapshot->story_day = g_GameState.current_story_day;
+    snapshot->vblank = g_BootHostVBlankCount;
+    SDL_SetAtomicInt(&host_room_snapshot,(int)(snapshot - host_room_snapshots));
+}
+
+static void Host_CrashHex(char *out, size_t size, size_t *used, const u8 *data, size_t count, unsigned address) {
+    for (size_t i = 0; i < count && *used + 1 < size; ++i) {
+        const char *end = i % 32 == 31 || i + 1 == count ? "\r\n" : "";
+        if (i % 32) {
+            Host_CrashAppend(out, size, used, " %02X%s", data[i], end);
+        } else {
+            Host_CrashAppend(out, size, used, "%04X: %02X%s", address + (unsigned)i, data[i], end);
+        }
+    }
+}
+
+static void Host_DescribeSaveData(char *out, size_t size) {
+    const int index = SDL_GetAtomicInt(&host_room_snapshot);
+    size_t used = 0;
+    out[0] = 0;
+    Host_CrashAppend(out, size, &used, "\r\n== Room snapshot ==\r\n");
+    if (index < 0) {
+        Host_CrashAppend(out, size, &used, "None: no room had started yet, so there is no save data.\r\n");
+        return;
+    }
+    const HostRoomSnapshot *snapshot = &host_room_snapshots[index];
+    Host_CrashAppend(out, size, &used,
+                     "Taken when room %d started, story day %d, %u seconds before the crash. The save data below "
+                     "is all from that moment.\r\n%s",
+                     snapshot->room, snapshot->story_day, (unsigned)((g_BootHostVBlankCount - snapshot->vblank) / 60u),
+                     snapshot->links_fixed ? "Note: Aya's battle record links were damaged; written as the saved records.\r\n" : "");
+    Host_CrashAppend(out, size, &used, "\r\n== Save data (save file bytes from 0x0100) ==\r\n");
+    Host_CrashHex(out, size, &used, snapshot->data, sizeof(snapshot->data), 0x100u);
+#ifdef PE_MODS
+    Host_CrashAppend(out, size, &used, "\r\n== Save tail (save file bytes from 0x1C90) ==\r\n");
+    if (snapshot->have_mod_tail) {
+        Host_CrashHex(out, size, &used, snapshot->card + 0x1C90, sizeof(snapshot->card) - 0x1C90, 0x1C90u);
+    } else {
+        Host_CrashAppend(out, size, &used,
+                         "Not available: mod code was running when the room started, so the mods' save data was not taken.\r\n");
+    }
+#endif
+}
+
 static void Host_PrintHelp(const char *program_name) {
     printf(
         "Usage: %s [--disc <USA Disc 1 CUE/BIN>] [--disc2 <USA Disc 2 CUE/BIN>] [--choose-discs] "
-        "[--geometry-correction 0|1] [--antialiasing 0|1] [--model-filtering 0|1] "
+        "[--geometry-correction 0|1] [--antialiasing 0|1] [--model-filtering 0|1] [--widescreen 0|1] "
         "[--headless | --headless-gpu] [--internal-resolution 1..8] [--frame-limit N] [--control-at N] "
-        "[--dump-vram PATH] [--dump-frame PATH] [--dump-audio PATH] [--pad-at VBLANK:BUTTON_MASK ...]\n",
+        "[--dump-vram PATH] [--dump-frame PATH] [--dump-audio PATH] [--pad-at VBLANK:BUTTON_MASK ...] "
+        "[--test-crash-after N | --test-abort-after N]\n",
         program_name
     );
     printf("Without --disc, opens a native multi-select CUE/BIN dialog. --choose-discs selects new images. ESC opens desktop settings.\n");
@@ -1357,6 +1839,7 @@ static void Host_PrintHelp(const char *program_name) {
     printf("--dump-audio writes stereo 44100 Hz signed-16-bit little-endian PCM; requires headless and PSYZ_AUDIO_CLOCK=video.\n");
     printf("Headless control: --control-at N pauses for stdin commands: advance FRAMES BUTTON_MASK, graphics PGXP AA FILTER (0/1; advances 8 blanks), or quit (requires --frame-limit).\n");
     printf("Headless fixtures only: --diagnostic-hp-at VBLANK:EXPECTED_HP:VALUE (requires --frame-limit; output is marked coverage-only)\n");
+    printf("--test-crash-after N / --test-abort-after N crash on purpose at VBlank N to check the crash report (its path is printed).\n");
 }
 
 static int Host_ParsePadEventArg(const char *spec, int argc) {
@@ -1444,6 +1927,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    CrashReport_Install(interactive, Host_DescribeCrash);
+    CrashReport_SetSaveData(Host_DescribeSaveData);
+    g_BootSceneStarted = Host_TakeRoomSnapshot;
+#ifdef PE_MODS
+    CrashReport_SetMods(pe_mod_crash_describe);
+#endif
     Host_InitOptions(interactive);
     unsigned internal_resolution = host_options.scale;
     int resolution_argument = 0;
@@ -1482,9 +1971,11 @@ int main(int argc, char **argv) {
             internal_resolution = (unsigned)scale;
         } else if (!strcmp(argv[arg], "--geometry-correction") ||
                    !strcmp(argv[arg], "--antialiasing") ||
-                   !strcmp(argv[arg], "--model-filtering")) {
+                   !strcmp(argv[arg], "--model-filtering") ||
+                   !strcmp(argv[arg], "--widescreen")) {
             unsigned effect = !strcmp(argv[arg], "--geometry-correction") ? 1u :
-                              !strcmp(argv[arg], "--antialiasing") ? 2u : 4u;
+                              !strcmp(argv[arg], "--antialiasing") ? 2u :
+                              !strcmp(argv[arg], "--model-filtering") ? 4u : 8u;
             if ((effect_arguments & effect) || arg + 1 >= argc ||
                 (strcmp(argv[arg+1], "0") && strcmp(argv[arg+1], "1"))) {
                 fprintf(stderr, "Missing, invalid or duplicate graphics effect (use 0 or 1)\n");
@@ -1494,7 +1985,8 @@ int main(int argc, char **argv) {
             int enabled = argv[++arg][0] == '1';
             if (effect == 1u) host_options.geometry_correction = enabled;
             else if (effect == 2u) host_options.antialiasing = enabled;
-            else host_options.model_filtering = enabled;
+            else if (effect == 4u) host_options.model_filtering = enabled;
+            else host_options.widescreen = enabled;
         } else if (!strcmp(argv[arg], "--frame-limit")) {
             char *end = NULL;
             errno = 0;
@@ -1513,6 +2005,17 @@ int main(int argc, char **argv) {
                 return EXIT_FAILURE;
             }
             g_BootHostControlAt = (u32)tick;
+        } else if (!strcmp(argv[arg], "--test-crash-after") || !strcmp(argv[arg], "--test-abort-after")) {
+            char *end = NULL;
+            errno = 0;
+            int abort_crash = !strcmp(argv[arg], "--test-abort-after");
+            unsigned long tick = arg + 1 < argc ? strtoul(argv[++arg], &end, 10) : 0;
+            if (!tick || tick > INT_MAX || errno || *end || g_BootHostCrashAt) {
+                fprintf(stderr, "Invalid or duplicate test crash VBlank\n");
+                return EXIT_FAILURE;
+            }
+            g_BootHostCrashAt = (u32)tick;
+            g_BootHostCrashAbort = abort_crash;
         } else if (!strcmp(argv[arg], "--dump-vram")) {
             if (arg + 1 >= argc || g_BootHostVramPath) {
                 fprintf(stderr, "Missing or duplicate capture path\n");
@@ -1687,8 +2190,9 @@ image_error:
 images_ready:;
     host_options.scale = internal_resolution;
     g_BootHostGraphicsOptions = Host_ControlGraphics;
-    if (interactive) {
-        /* Copy both before replacing picker storage: selection can be reversed. */
+    {
+        /* Keep CLI/headless disc names accurate in reports too. Copy both
+         * before replacing picker storage: selection can be reversed. */
         char ordered[2][4096] = {{0}};
         for (unsigned i = 0; i < 2; ++i) {
             const char *path = NULL;
@@ -1700,6 +2204,8 @@ images_ready:;
             snprintf(ordered[i], sizeof(ordered[i]), "%s", path ? path : "");
         }
         memcpy(host_options.discs, ordered, sizeof(ordered));
+    }
+    if (interactive) {
         host_images = images;
         g_CdImageRequest = Host_RequestImage;
         g_BootMovieSkipConfirm = Host_ConfirmMovieSkip;
@@ -1721,7 +2227,11 @@ images_ready:;
             Psyz_VideoSetGeometryCorrection(host_options.geometry_correction != 0);
         Psyz_VideoSetAntialiasing(host_options.antialiasing);
         Psyz_VideoSetModelFiltering(host_options.model_filtering);
+        Psyz_VideoSetWidescreen(host_options.widescreen);
     }
+    /* Widescreen reads background texels to find where a room's picture
+     * ends (mesh_list.c); kept on so switching it on mid-game works. */
+    Psyz_GpuSetVramCopy(1);
     Boot_InitSystem();
     if (Psyz_VideoGetInternalResolution() != internal_resolution) {
         fprintf(stderr, "Requested internal resolution unavailable\n");
@@ -1804,7 +2314,10 @@ images_ready:;
                     fprintf(stderr, "Title assets failed: %d\n", title_status);
                     goto shutdown;
                 }
-                Draw_InitDisplay(MenuCard_RunListScreen());
+                int title_choice = MenuCard_RunListScreen();
+                if (title_choice == PE_NEW_GAME_TITLE || title_choice == PE_NEW_GAME_TUTORIAL)
+                    PE_HOOK(PE_HOOK_NEW_GAME, (&(PeHookNewGame){title_choice}));
+                Draw_InitDisplay(title_choice);
                 g_GameState.flags |= 3;
                 break;
             }
@@ -1848,6 +2361,7 @@ shutdown:
     g_CdImageVolumes[0] = g_CdImageVolumes[1] = NULL;
     g_CdImageRequest = NULL;
     g_BootMovieSkipConfirm = NULL;
+    g_BootSceneStarted = NULL;
     host_images = NULL;
     pe_disc_close(&images[0]);
     pe_disc_close(&images[1]);

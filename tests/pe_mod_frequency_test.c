@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG /* These runtime checks must also execute in release CI builds. */
+#endif
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,12 +9,110 @@
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
 #include "pe1/game_state.h"
+#include "pe1/pad_state.h"
 #include "pe1/scene_room.h"
 Pe1GameState g_GameState;
 SceneRoomSectorRange g_RoomSectorTable[SCENE_ROOM_COUNT];
 int g_SceneDispatchCur;
 u32 g_ScriptVariableBank[512];
-static int loaded = 1, battle, *mode;
+static int loaded = 1, battle, *mode, free_field = 1;
+static int *always_run, *run_speed, *walk_speed, *combat_speed, *entry_speed;
+
+static PeHookFn on_player_move, on_pad_map, on_actor_step;
+static BattleEntity player;
+PadPacket g_PadPackets[2];
+s32 g_FieldRenderFlagTable[32];
+int g_BattleModeState;
+BattleEntity *pe_player(void) { return &player; }
+int pe_free_field(void) { return free_field; }
+void pe_mod_log(const char *id,const char *fmt,...) { (void)id;(void)fmt; }
+int pe_menu_register_toggle(const char *p,const char *l,const char *d,int *v,PeMenuPerFrame tick) {
+    (void)p;(void)l;(void)d;(void)tick;always_run=v;return 0;
+}
+int pe_menu_register_tick(PeMenuPerFrame tick) { (void)tick; assert(0);return 0; }
+void pe_move_register(const char *);
+static void movement_regression(void) {
+    pe_move_register("pe_qol");
+    assert(on_pad_map && on_actor_step && on_player_move);
+    *always_run=*run_speed=*walk_speed=*combat_speed=*entry_speed=0;
+    memset(&player,0,sizeof(player));
+    g_PadPackets[0].header=0x4100;g_PadPackets[0].buttons=0xFFFF;
+    g_FieldRenderFlagTable[0]=0x4000;
+    // Actual Central Park encounter: the game sets 3x for its entry script.
+    battle=1;free_field=0;g_BattleModeState=7;player.actionMode=4;
+    for(int factor=0x10000;factor<=0x30000;factor+=0x4000) {
+        player.moveFactor=factor;assert(player.moveFactor==factor);
+        int local=factor;PeHookPlayerMove step={&player,&local,1,1};
+        on_player_move(&step,NULL);assert(local==factor && player.moveFactor==factor);
+    }
+    // Each speed affects only a local input calculation; it cannot survive
+    // into a menu, room reload or cutscene, even if the script uses that speed.
+    battle=0;free_field=1;player.moveFactor=0x10000;
+    for(int speed=0;speed<8;++speed) {
+        const int factors[]={0x10000,0x14000,0x18000,0x1C000,0x20000,0x24000,0x28000,0x30000};
+        *walk_speed=speed;int local=player.moveFactor;
+        PeHookPlayerMove step={&player,&local,0,0};on_player_move(&step,NULL);
+        assert(local==factors[speed] && player.moveFactor==0x10000);
+        player.moveFactor=factors[speed];battle=1;free_field=0;
+        assert(player.moveFactor==factors[speed]);
+        battle=0;free_field=1;player.moveFactor=0x10000;
+    }
+    *run_speed=5;*walk_speed=3;*combat_speed=2;
+    int local=0x10000;PeHookPlayerMove step={&player,&local,1,0};
+    on_player_move(&step,NULL);assert(local==0x24000);
+    local=0x10000;step.combat=1;battle=1;free_field=0;g_BattleModeState=0;
+    on_player_move(&step,NULL);assert(local==0x18000);
+    local=0x30000;on_player_move(&step,NULL);assert(local==0x30000);
+    local=0x10000;step.actor=&step;on_player_move(&step,NULL);assert(local==0x10000);
+    step.actor=&player;loaded=0;on_player_move(&step,NULL);assert(local==0x10000);loaded=1;
+    battle=0;free_field=1;
+    /* Run mapping is local even if the original map equals a previous mod
+     * value. It follows remapping immediately; disabling needs no cleanup. */
+    const int masks[]={0x4000,0x100,0,0xF0};
+    for(unsigned m=0;m<4;++m)for(int enabled=0;enabled<2;++enabled)
+    for(int field=0;field<2;++field)for(int ready=0;ready<2;++ready)
+    for(int held=0;held<2;++held) {
+        g_FieldRenderFlagTable[0]=masks[m];*always_run=enabled;free_field=field;loaded=ready;
+        int mask=masks[m];PeHookPadMap pad={held?(unsigned)masks[m]:0,&mask};
+        on_pad_map(&pad,NULL);
+        assert(mask==(enabled && field && ready ? (pad.buttons & (unsigned)masks[m] ? 0 : 0xF0) : masks[m]));
+        assert(g_FieldRenderFlagTable[0]==masks[m]);
+    }
+    loaded=1;free_field=0;battle=1;g_BattleModeState=7;
+    memset(&player,0,sizeof(player));player.actionMode=5;player.animStep=0x10000;
+    player.motionX=100;player.motionZ=-80;
+    const int entry_factors[]={0x10000,0x18000,0x20000,0x30000,0x40000};
+    for(int choice=0;choice<5;++choice) {
+        *entry_speed=choice;
+        int speed=100,anim=0x10000;
+        BattleEntity before=player;
+        PeHookActorStep step={&player,&speed,NULL};on_actor_step(&step,NULL);
+        assert(speed==100*entry_factors[choice]/0x10000);
+        step.speed=NULL;step.anim=&anim;on_actor_step(&step,NULL);
+        assert(anim==entry_factors[choice] && !memcmp(&player,&before,sizeof(player)));
+        anim=entry_factors[choice]+1;on_actor_step(&step,NULL);assert(anim==entry_factors[choice]+1);
+        /* Exiting the phase cannot retain a previous mod step, even when
+         * a script deliberately chooses the exact same value. */
+        g_BattleModeState=0;anim=entry_factors[choice];on_actor_step(&step,NULL);
+        assert(anim==entry_factors[choice]);g_BattleModeState=7;
+    }
+    *entry_speed=4;
+    for(unsigned guard=0;guard<5;++guard) {
+        loaded=guard!=0;battle=guard!=1;g_BattleModeState=guard==2?0:7;
+        player.actionMode=guard==3?4:5;
+        int speed=100;PeHookActorStep step={guard==4?(void *)&step:&player,&speed,NULL};
+        on_actor_step(&step,NULL);assert(speed==100);
+    }
+    loaded=1;battle=1;player.actionMode=5;
+    player.facingAngle=0x800;
+    int speed=100;PeHookActorStep entry_step={&player,&speed,NULL};on_actor_step(&entry_step,NULL);
+    assert(speed==100);
+    player.facingAngle=0;speed=INT32_MAX;on_actor_step(&entry_step,NULL);
+    assert(speed==INT32_MAX);
+    speed=INT32_MIN;on_actor_step(&entry_step,NULL);assert(speed==INT32_MIN);
+    battle=0;free_field=1;
+    puts("Passed movement options: eight local input speeds, run/combat selection, scripts, transitions and non-player actors preserve original actor factors");
+}
 static PeHookFn on_random;
 int pe_game_loaded(void) { return loaded; }
 int pe_in_battle(void) { return battle; }
@@ -19,18 +120,37 @@ int Text_EncodeBase32(char *out, unsigned value) { (void)value; strcpy(out,"M000
 int Text_ParseMapNumber(signed char *s) { (void)s; return 1; }
 int pe_menu_register_choice(const char *p, const char *l, const char *d, int *v,
                             const char *const *n, unsigned c) {
-    (void)p; (void)l; (void)d; (void)n; assert(c == 4); mode = v; return 0;
+    (void)p; (void)d; (void)n;
+    if(!strcmp(l,"Run speed")) { assert(c==8);run_speed=v; }
+    else if(!strcmp(l,"Walk speed")) { assert(c==8);walk_speed=v; }
+    else if(!strcmp(l,"Combat speed")) { assert(c==8);combat_speed=v; }
+    else if(!strcmp(l,"Battle start speed")) { assert(c==5);entry_speed=v; }
+    else { assert(c==4);mode=v; }
+    return 0;
 }
 int pe_hook_add(int id, PeHookFn fn, void *u, int p, const char *m) {
-    (void)u; (void)p; (void)m; assert(id == PE_HOOK_SCRIPT_RANDOM); on_random = fn; return 0;
+    (void)u; (void)p; (void)m;
+    if(id==PE_HOOK_SCRIPT_RANDOM) on_random=fn;
+    else if(id==PE_HOOK_PLAYER_MOVE) on_player_move=fn;
+    else if(id==PE_HOOK_PAD_MAP) on_pad_map=fn;
+    else if(id==PE_HOOK_ACTOR_STEP) on_actor_step=fn;
+    else assert(id==PE_HOOK_PAD_READ);
+    return 0;
 }
 void pe_battle_frequency_register(const char *);
 static unsigned word(const unsigned char *p) { unsigned v; memcpy(&v,p,4); return v; }
+static int seek64(FILE *f, long long offset) {
+#ifdef _WIN32
+    return _fseeki64(f, offset, SEEK_SET);
+#else
+    return fseeko(f, (off_t)offset, SEEK_SET);
+#endif
+}
 static void user_data(FILE *f, unsigned lba, void *out, size_t bytes) {
     unsigned char *p = out;
     while (bytes) {
         size_t n = bytes > 2048 ? 2048 : bytes;
-        assert(!_fseeki64(f, (long long)lba * 2352 + 24, SEEK_SET));
+        assert(!seek64(f, (long long)lba * 2352 + 24));
         assert(fread(p,1,n,f) == n); p += n; bytes -= n; ++lba;
     }
 }
@@ -98,5 +218,6 @@ int main(int argc, char **argv) {
     roll.next=code+5; end=2; *mode=2; on_random(&roll,NULL); assert(end==1);
     puts("Passed frequency modes, Normal restoration, unrelated RNG rejection, truncation bounds, and battle/skip guards.");
     if (argc==3) real_rooms(argv[1],argv[2]);
+    movement_regression();
     return 0;
 }

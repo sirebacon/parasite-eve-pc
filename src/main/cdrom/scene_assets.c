@@ -2,6 +2,8 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "common.h"
+#include <psyz/audio.h>
+#include <psyz/cd.h>
 #include "pe1/akao.h"
 #include "pe1/akao/commands.h"
 #include "pe1/akao/pan3d.h"
@@ -546,7 +548,15 @@ static PeDiscFile mounted_archive;
 static int completion;
 void CdRom_BindImage(PeDisc *disc, const PeDiscFile *archive)
 {
-    g_CdImage = disc;
+    if (disc != g_CdImage) {
+        /* A disc change retires decoded XA as well as future sector reads.
+         * Do not hold audio around the CD command (kernel/IRQ lock order). */
+        CdControlB(8, NULL, NULL);
+        Psyz_AudioLock();
+        Psyz_CdSetReadCB(NULL);
+        g_CdImage = disc;
+        Psyz_AudioUnlock();
+    }
     if (archive) mounted_archive = *archive;
     else memset(&mounted_archive, 0, sizeof(mounted_archive));
     completion = 0;

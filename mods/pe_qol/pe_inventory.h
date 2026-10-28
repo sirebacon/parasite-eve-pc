@@ -4,8 +4,9 @@
 #include <string.h>
 #include "pe_game.h"
 
-/* Feature-private helpers. These blocks retain the recomp's exact disk
- * layout; native pointers never enter a memory-card save. */
+/* Feature-private helpers. The PKEY and SORT blocks keep the recomp's exact disk
+ * layout in the host's save window (host/pe_save.h), for builds without the host's
+ * records; native pointers never enter a memory-card save. */
 static inline int pe_inventory_limit(void) {
     int n = Inv_GetAyaSlotLimit();
     return n < 0 ? 0 : n > 50 ? 50 : n;

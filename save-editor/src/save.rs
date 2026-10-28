@@ -5,9 +5,13 @@ use crate::charset::{decode_sjis_title, format_sjis_title_bytes, pe_decode, pe_e
 use crate::crc::{
     calc_save_crc16, read_stored_crc, update_save_crc16, SAVE_BLOCK_SIZE, SAVE_CRC_OFFSET,
 };
+use crate::disc::{
+    game_data, hp_with_armor, HP_STAT, ITEM_CAPACITY_STAT, MAX_STAT_BAG_SLOTS, MAX_STAT_MAX_HP,
+    TOP_LEVEL_STAT,
+};
 use crate::tables::{
-    encode_mod_byte, item_metadata, map_location_descriptive, mod_metadata,
-    save_header_location_name, ItemCategory, PARASITE_SPELLS,
+    encode_mod_byte, game_icon_and_kind, item_metadata, map_location_descriptive, mod_metadata,
+    save_header_location_name, ItemCategory, BAG_CAPACITY_BY_LEVEL, EQUIPMENT_TEMPLATES, PARASITE_SPELLS,
 };
 
 pub const RT_OFFSET: usize = 0x0100;
@@ -15,6 +19,10 @@ pub const TAIL_OFFSET: usize = 0x13E4;
 pub const SCRIPT_VAR_OFFSET: usize = 0x13E4;
 pub const SCRIPT_VAR_SIZE: usize = 0x0800;
 pub const BATTLE_STATE_OFFSET: usize = 0x1BFC;
+/// Item Capacity stat value of the top level (98), which gives `MAX_STAT_BAG_SLOTS`.
+pub const MAX_BAG_ITEM_CAPACITY_STAT: u16 = TOP_LEVEL_STAT;
+/// Armor mod id of HP Max Up (`AMOD_HP_MAX_UP`).
+const ARMOR_MOD_HP_MAX_UP: u8 = 0x0B;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EquipmentRecord {
@@ -52,29 +60,34 @@ impl EquipmentRecord {
         }
     }
 
+    /// A new record for `item_id`, made the way the game makes one: a verbatim copy of the item's
+    /// base record (`Inv_FindSlotByIndex`). The verified USA templates also work
+    /// without a mounted disc; no guessed stats or missing factory effects.
     pub fn from_item_template(index: usize, item_id: u8) -> Self {
-        let meta = item_metadata(item_id);
-        let (tail_count, tail_capacity) = meta.default_slots;
-        let ammo = if meta.category.is_weapon() && meta.category != ItemCategory::MeleeWeapon {
-            meta.default_stats[2] as u16
-        } else {
-            0
-        };
-        Self {
-            index,
-            icon_id: meta.default_icon_id.max(1),
-            tail_capacity,
-            reserved02: [0; 2],
-            item_id,
-            flags: 0,
-            kind: meta.default_kind,
-            base_stats: meta.default_stats,
-            ammo,
-            reserve_ammo: 0,
-            bonus_stats: [0; 3],
-            tail_count,
-            tail_data: [0; 11],
+        if let Some(bytes) = game_data().and_then(|g| g.item_record(item_id)) {
+            let mut record = Self::parse(index, &bytes);
+            record.tail_capacity = record.tail_capacity.min(10);
+            return record;
         }
+        if (0x3F..=0xC7).contains(&item_id) {
+            let mut record = Self::parse(index, &EQUIPMENT_TEMPLATES[(item_id - 0x3F) as usize]);
+            // The unused retail Debug SMG has a capacity of 100, beyond the
+            // record's ten editable effect slots and the port's save bounds.
+            record.tail_capacity = record.tail_capacity.min(10);
+            record
+        } else {
+            Self::empty(index)
+        }
+    }
+
+    /// Icon (bag picture) and kind (weapon class: the model Aya holds and how it fires) for
+    /// `item_id`: from the disc when loaded, else the game's value for the item's category.
+    pub fn icon_and_kind_for(item_id: u8) -> (u8, u8) {
+        if let Some(rec) = game_data().and_then(|g| g.item_record(item_id)) {
+            return (rec[0x00], rec[0x06]);
+        }
+        let meta = item_metadata(item_id);
+        game_icon_and_kind(meta.category).unwrap_or((meta.default_icon_id.max(1), meta.default_kind))
     }
 
     pub fn is_active(&self) -> bool {
@@ -208,7 +221,8 @@ pub struct PeSaveSlot {
     pub level: u8,
     /// EX Game round counter (`0` = 1st Playthrough, `1` = 2nd Round, etc.)
     pub new_game_count: u8,
-    /// Active item slot limit (`10..=50`)
+    /// Aya's own bag size (`10..=46`), set by the game from the Item Capacity stat; equipped
+    /// armor mods add up to 50 at run time
     pub inventory_slot_count: u8,
     /// Bonus Points (`0..=99999`)
     pub bonus_points: u32,
@@ -435,6 +449,54 @@ impl PeSaveSlot {
         })
     }
 
+    /// Check structural references before any save/export writes a container.
+    /// Stat bonuses, ammo and legitimate custom effects are left untouched.
+    pub fn validate_inventory(&self) -> Result<()> {
+        if self.inventory_slot_count > 50 || self.inventory_items.len() != 50
+            || self.storage.len() != 100 || self.special_storage.len() != 82
+            || self.equipment.len() != 128 {
+            bail!("Invalid inventory dimensions");
+        }
+        for (index, item) in self.equipment.iter().enumerate() {
+            if item.index != index {
+                bail!("Equipment record {} has an invalid index", index);
+            }
+            if item.icon_id != 0 && (item.item_id == 0 || item.kind >= 24
+                || item.tail_count > 10 || item.tail_capacity > 10) {
+                bail!("Equipment record {} has invalid type or modification slots", index);
+            }
+        }
+        let mut seen = [false; 128];
+        for list in [&self.inventory_items, &self.storage, &self.special_storage] {
+            for &value in list {
+                let id = value as u16;
+                if id <= 255 || (0x200..=0x208).contains(&id) { continue; }
+                if !(0x100..0x180).contains(&id) {
+                    bail!("Invalid inventory reference 0x{:04X}", id);
+                }
+                let index = (id - 0x100) as usize;
+                if self.equipment[index].icon_id == 0 || seen[index] {
+                    bail!("Equipment record {} is missing or referenced more than once", index);
+                }
+                seen[index] = true;
+            }
+        }
+        for (armor, slot) in [(false, self.equipped_weapon_slot), (true, self.equipped_armor_slot)] {
+            if slot == -1 { continue; }
+            if !(0..50).contains(&slot) { bail!("Invalid equipped inventory slot {}", slot); }
+            let id = self.inventory_items[slot as usize] as u16;
+            let kind = if (0x100..0x180).contains(&id) {
+                self.equipment[(id - 0x100) as usize].kind
+            } else if (1..=255).contains(&id) {
+                item_metadata(id as u8).default_kind
+            } else { 0 };
+            if if armor { kind != 9 } else { !(1..=8).contains(&kind) } {
+                bail!("Equipped slot {} does not contain compatible equipment", slot);
+            }
+        }
+        Ok(())
+    }
+
     /// Serializes all modified fields back into `self.raw_bytes`, syncs `g_AyaBattleState`,
     /// updates the Shift-JIS header title if relevant fields changed, and recalculates the CRC-16 at `0x1C8C`.
     pub fn to_bytes(&mut self) -> Vec<u8> {
@@ -492,6 +554,15 @@ impl PeSaveSlot {
             self.raw_bytes[0x04..0x44].copy_from_slice(&title_bytes);
             self.header_title = decode_sjis_title(&title_bytes).1;
         }
+
+        let stat_off = RT_OFFSET + 0x48 + ITEM_CAPACITY_STAT * 2;
+        let orig_item_capacity =
+            u16::from_le_bytes(self.raw_bytes[stat_off..stat_off + 2].try_into().unwrap());
+        self.sync_bag_with_item_capacity(orig_slot_count, orig_item_capacity);
+        let hp_off = RT_OFFSET + 0x48 + HP_STAT * 2;
+        let orig_hp_stat =
+            u16::from_le_bytes(self.raw_bytes[hp_off..hp_off + 2].try_into().unwrap());
+        self.sync_max_hp_with_hp_stat(orig_max_hp, orig_hp_stat);
 
         let battle_state_needs_sync = self.max_hp != orig_max_hp
             || self.current_hp != orig_cur_hp
@@ -594,6 +665,111 @@ impl PeSaveSlot {
         self.calculated_crc = crc;
 
         self.raw_bytes.clone()
+    }
+
+    /// The game sets the bag size from the Item Capacity stat whenever it recomputes Aya's stats
+    /// (`Inv_RecalcSlotStats`: level ups, equipment changes, the status menu), so an edited bag
+    /// size only sticks when the stat gives it. A changed stat sets the bag; otherwise a changed
+    /// bag sets the stat. The stat tops out at 46 slots; armor mods add the rest (to 50) at run
+    /// time and are not stored here.
+    fn sync_bag_with_item_capacity(&mut self, orig_slots: u8, orig_stat: u16) {
+        let stat = &mut self.stats_levels[ITEM_CAPACITY_STAT];
+        if *stat != orig_stat {
+            self.inventory_slot_count = BAG_CAPACITY_BY_LEVEL[(*stat / 10).min(98) as usize];
+        } else if self.inventory_slot_count != orig_slots {
+            self.inventory_slot_count = self.inventory_slot_count.clamp(10, MAX_STAT_BAG_SLOTS);
+            if BAG_CAPACITY_BY_LEVEL[(*stat / 10).min(98) as usize] != self.inventory_slot_count {
+                *stat = (BAG_CAPACITY_BY_LEVEL.iter().position(|&n| n == self.inventory_slot_count).unwrap() * 10) as u16;
+            }
+        }
+    }
+
+    /// Whether the equipped armor carries HP Max Up, which lifts max HP by 3/20
+    /// (`BattleCmd_LoadWeaponModifiers` reads the mods in the armor's first `tail_count` slots).
+    pub fn armor_has_hp_max_up(&self) -> bool {
+        Self::has_hp_max_up(self.equipped_armor_slot, &self.inventory_items, |i| {
+            self.equipment.get(i).cloned()
+        })
+    }
+
+    /// `armor_has_hp_max_up` as the save stood when loaded or last written (`raw_bytes`).
+    fn raw_armor_has_hp_max_up(&self) -> bool {
+        let rt = &self.raw_bytes[RT_OFFSET..];
+        let inventory: Vec<i16> = (0..50)
+            .map(|i| i16::from_le_bytes([rt[0x68 + i * 2], rt[0x69 + i * 2]]))
+            .collect();
+        Self::has_hp_max_up(rt[0x42] as i8, &inventory, |i| {
+            (i < 128).then(|| EquipmentRecord::parse(i, &rt[0xCC + i * 0x20..0xEC + i * 0x20]))
+        })
+    }
+
+    fn has_hp_max_up(
+        armor_slot: i8,
+        inventory: &[i16],
+        record: impl Fn(usize) -> Option<EquipmentRecord>,
+    ) -> bool {
+        let Some(&val) = usize::try_from(armor_slot)
+            .ok()
+            .and_then(|slot| inventory.get(slot))
+        else {
+            return false;
+        };
+        let Some(rec) = usize::try_from(val as i32 - 0x100)
+            .ok()
+            .and_then(record)
+            .filter(|r| r.is_active())
+        else {
+            return false;
+        };
+        (0..(rec.tail_count as usize).min(11)).any(|i| rec.mod_id_at(i) == ARMOR_MOD_HP_MAX_UP)
+    }
+
+    /// The highest max HP the game allows with the armor Aya has on now.
+    pub fn max_hp_limit(&self) -> u16 {
+        hp_with_armor(MAX_STAT_MAX_HP, self.armor_has_hp_max_up())
+    }
+
+    /// The game recomputes max HP from the HP stat at the start of every battle, on level ups and
+    /// in the status menu (`Inv_RecalcSlotStats`), so an edited max HP only sticks when the stat
+    /// gives it. A changed stat sets max HP; otherwise a changed max HP sets the stat. The top
+    /// is 869, or 999 while the equipped armor has HP Max Up, so putting on or taking off such
+    /// armor also resets max HP. Current HP is kept within max HP, and a full bar stays full.
+    fn sync_max_hp_with_hp_stat(&mut self, orig_max_hp: u16, orig_stat: u16) {
+        let hp_max_up = self.armor_has_hp_max_up();
+        let armor_changed = hp_max_up != self.raw_armor_has_hp_max_up();
+        let was_full = self.current_hp >= self.max_hp;
+        let limit = self.max_hp_limit();
+        let stat = &mut self.stats_levels[HP_STAT];
+        match game_data() {
+            Some(g) => {
+                if *stat != orig_stat || armor_changed {
+                    self.max_hp = g.max_hp_for_stat(*stat, hp_max_up);
+                } else if self.max_hp != orig_max_hp {
+                    let wanted = self.max_hp.min(limit);
+                    if g.max_hp_for_stat(*stat, hp_max_up) != wanted {
+                        if let Some(v) = g.stat_for_max_hp(wanted, hp_max_up) {
+                            *stat = v;
+                        }
+                    }
+                    self.max_hp = g.max_hp_for_stat(*stat, hp_max_up);
+                }
+            }
+            None => {
+                if self.max_hp != orig_max_hp && self.max_hp >= limit {
+                    *stat = (*stat).max(TOP_LEVEL_STAT);
+                }
+                if *stat >= TOP_LEVEL_STAT
+                    && (*stat != orig_stat || self.max_hp != orig_max_hp || armor_changed)
+                {
+                    self.max_hp = limit;
+                }
+            }
+        }
+        self.current_hp = if was_full {
+            self.max_hp
+        } else {
+            self.current_hp.min(self.max_hp)
+        };
     }
 
     pub fn is_crc_valid(&self) -> bool {
@@ -736,6 +912,85 @@ impl PeSaveSlot {
         Ok(empty_slot)
     }
 
+    /// Sort order of a slot value: weapons, armor, ammo, medicine, other items, key items; then by
+    /// item id, and copies of one weapon or armor by their total stats, best first.
+    fn sort_key(&self, val: i16) -> (u8, u16, i32) {
+        let rank = |c: ItemCategory| match c {
+            ItemCategory::Handgun => 0,
+            ItemCategory::MachineGun => 1,
+            ItemCategory::Rifle => 2,
+            ItemCategory::Shotgun => 3,
+            ItemCategory::GrenadeLauncher => 4,
+            ItemCategory::RocketLauncher => 5,
+            ItemCategory::MeleeWeapon => 6,
+            ItemCategory::Armor => 7,
+            ItemCategory::Ammo | ItemCategory::Crate => 8,
+            ItemCategory::Consumable => 9,
+            ItemCategory::StatUpgrade => 10,
+            ItemCategory::Tool => 11,
+            ItemCategory::ParasiteEnergy => 12,
+            ItemCategory::TradingCard => 13,
+            ItemCategory::KeyItem => 14,
+            ItemCategory::Empty => 15,
+        };
+        match val {
+            1..=0xFF => (rank(item_metadata(val as u8).category), val as u16, 0),
+            0x100..=0x17F => match self.equipment.get((val - 0x100) as usize) {
+                Some(rec) if rec.is_active() => {
+                    let cat = item_metadata(rec.item_id).category;
+                    let cat = if cat.is_equipment() {
+                        cat
+                    } else if rec.is_armor() {
+                        ItemCategory::Armor
+                    } else {
+                        ItemCategory::MeleeWeapon
+                    };
+                    (rank(cat), rec.item_id as u16, -rec.effective_stats().iter().sum::<i32>())
+                }
+                _ => (16, val as u16, 0),
+            },
+            0x200..=0x208 => (rank(ItemCategory::Ammo), val as u16, 0),
+            _ => (16, val as u16, 0),
+        }
+    }
+
+    /// Sorts a list in place, filled slots first (empty ones at the end).
+    fn sort_values(&self, list: &mut [i16]) {
+        list.sort_by_key(|&v| (v == 0, if v == 0 { (0, 0, 0) } else { self.sort_key(v) }));
+    }
+
+    /// Sorts Aya's bag. The equipped weapon and armor stay equipped (their slot numbers follow
+    /// them), as the game's own Sort does.
+    pub fn sort_aya_bag(&mut self) {
+        let held = |slot: i8, items: &[i16]| {
+            usize::try_from(slot)
+                .ok()
+                .and_then(|s| items.get(s).copied())
+                .filter(|&v| v != 0)
+        };
+        let weapon = held(self.equipped_weapon_slot, &self.inventory_items);
+        let armor = held(self.equipped_armor_slot, &self.inventory_items);
+        let mut items = std::mem::take(&mut self.inventory_items);
+        self.sort_values(&mut items);
+        let find = |v: Option<i16>, old: i8| match v {
+            Some(v) => items.iter().position(|&x| x == v).map_or(old, |p| p as i8),
+            None => old,
+        };
+        self.equipped_weapon_slot = find(weapon, self.equipped_weapon_slot);
+        self.equipped_armor_slot = find(armor, self.equipped_armor_slot);
+        self.inventory_items = items;
+    }
+
+    /// Sorts Wayne's storage: his item shelf and his equipment vault.
+    pub fn sort_wayne_storage(&mut self) {
+        let mut storage = std::mem::take(&mut self.storage);
+        let mut special = std::mem::take(&mut self.special_storage);
+        self.sort_values(&mut storage);
+        self.sort_values(&mut special);
+        self.storage = storage;
+        self.special_storage = special;
+    }
+
     /// Decodes the 16x16 4bpp PS1 save icon at `0x60..0x100` into a 16x16 RGBA8 image (1024 bytes).
     pub fn decode_icon_rgba(&self) -> [u8; 16 * 16 * 4] {
         let mut rgba = [0u8; 16 * 16 * 4];
@@ -779,13 +1034,31 @@ impl PeSaveSlot {
     // Quick Cheat & Preset Helpers
     // =========================================================================
 
+    /// Repair icon/model classes written by older editor templates without
+    /// replacing a player's upgrades, ammunition, effects or engraving.
+    pub fn repair_equipment_types(&mut self) -> usize {
+        let mut repaired = 0;
+        for item in self.equipment.iter_mut().filter(|item| item.is_active()) {
+            if (0x3F..=0xC7).contains(&item.item_id) {
+                let meta = item_metadata(item.item_id);
+                if item.icon_id != meta.default_icon_id || item.kind != meta.default_kind {
+                    item.icon_id = meta.default_icon_id;
+                    item.kind = meta.default_kind;
+                    repaired += 1;
+                }
+            }
+        }
+        repaired
+    }
+
     pub fn apply_cheat_max_aya(&mut self) {
         self.set_display_level(99);
         self.total_exp = 9_999_999;
-        self.max_hp = 999;
-        self.current_hp = 999;
+        // The game's own top: 869, or 999 with HP Max Up armor equipped (see `to_bytes`).
+        self.max_hp = self.max_hp_limit();
+        self.current_hp = self.max_hp;
         self.bonus_points = 99_999;
-        self.inventory_slot_count = 50;
+        self.inventory_slot_count = MAX_STAT_BAG_SLOTS;
         self.pe_bonus_pool = 999;
         self.stats_levels = [1000; 7];
     }
@@ -829,8 +1102,12 @@ impl PeSaveSlot {
         }
     }
 
+    /// Adds an ultimate P90 and Cm Suit 2 and equips them (the old gear stays in the bag), plus
+    /// tool kits and medicine. The suit carries HP Max Up, so with Max Aya max HP reaches 999.
     pub fn apply_cheat_give_ultimate_loadout(&mut self) -> Result<()> {
-        self.inventory_slot_count = 50;
+        self.inventory_slot_count = MAX_STAT_BAG_SLOTS;
+        self.stats_levels[ITEM_CAPACITY_STAT] =
+            self.stats_levels[ITEM_CAPACITY_STAT].max(MAX_BAG_ITEM_CAPACITY_STAT);
         self.apply_cheat_max_ammo();
 
         // Create Ultimate DE50AE7 / P90 and Cm Suit 2 if free slots exist
@@ -851,6 +1128,7 @@ impl PeSaveSlot {
             }
             if let Some(pos) = self.inventory_items.iter().position(|&v| v == 0) {
                 self.inventory_items[pos] = weapon_eq_val;
+                self.equipped_weapon_slot = pos as i8;
             }
         }
 
@@ -870,6 +1148,8 @@ impl PeSaveSlot {
             }
             if let Some(pos) = self.inventory_items.iter().position(|&v| v == 0) {
                 self.inventory_items[pos] = armor_eq_val;
+                // Worn, so its HP Max Up counts: with Max Aya, max HP reaches 999.
+                self.equipped_armor_slot = pos as i8;
             }
         }
 

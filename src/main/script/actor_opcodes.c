@@ -1,4 +1,5 @@
 #include "common.h"
+#include "pe_hooks.h"
 #include "pe1/akao.h"
 #include "pe1/akao/globals.h"
 #include "pe1/draw_state.h"
@@ -427,6 +428,7 @@ int Render_CameraTrackRelativeOffset(int **args) {
     }
 
     /* MIPS shifts the word bits even when the sine/cosine is negative. */
+    PE_HOOK(PE_HOOK_ACTOR_STEP, (&(PeHookActorStep){speed_entity, &movement_speed, NULL}));
     g_CurrentEntity->motion_x = Math_FixedMul(-movement_speed, (s32)((u32)rsin(target_angle) << 4));
     movement_z = Math_FixedMul(-movement_speed, (s32)((u32)rcos(target_angle) << 4));
     current_x = (target_x - current_x) >> 16;

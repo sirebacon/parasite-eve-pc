@@ -2,15 +2,15 @@
  * Movement: Always run, run / walk / combat speed, battle-start speed. Ported from the psxrecomp
  * build (src/mods/pe_mod_menu.c, "movement"). F1 > PE Enhancements.
  *
- * SPEED: while Aya moves in the field, her moveFactor (BattleEntity.moveFactor, 1.0 = 0x10000;
- * walking moves 5.0 x it a logic frame, running 22.5 x it) becomes the walk or run factor, and
- * goes back to 1.0 when she stops -- only from one of our own values, so a value a script set is
- * left alone. In battle, while she can move (battle phase 0), the combat factor applies.
+ * SPEED: scale only the local multiplier in the original player-input walk/run
+ * handlers. Never write BattleEntity.moveFactor: scripted walks and encounter
+ * entry share that field and may deliberately use the same factors as our options.
+ * The combat setting applies only while Aya can move (battle phase 0).
  *
  * ALWAYS RUN: the run bit of the field input is input bit 0 of the button mapping table
  * (g_FieldRenderFlagTable[0], Circle by default). In free field movement with Always run on it
- * maps to the d-pad, so moving means running, and to nothing while the run button is held, so
- * holding it walks. Menus and battle get the original mapping back.
+ * uses a local d-pad mask, so moving means running, and no mask while the run button is held.
+ * The original button mapping is never modified.
  *
  * ANALOG: in analog mode the game sets the run bit only when one stick axis is past full tilt,
  * so a round stick gate dropped Aya to a walk on diagonals. Before the game reads the pad
@@ -18,9 +18,9 @@
  * unchanged: to run, out until the larger axis reaches its edge; to walk, in until neither axis
  * is at full tilt. Cross always walks (examining has to stop her).
  *
- * BATTLE START: as a fight opens (phase 7) Aya walks to her spot with a fixed velocity that
- * ignores moveFactor; while her heading holds steady, (factor - 1) x that velocity is added to
- * her position each frame and her animation step matches. Off by default.
+ * BATTLE START: while Aya walks to her spot (phase 7), scale the local script
+ * speed before its original destination clamp, and the local animation increment.
+ * No mod-owned velocity or animation step persists in the actor. Off by default.
  */
 #include <stdint.h>
 
@@ -29,6 +29,7 @@
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
 #include "pe1/boot.h"
+#include "pe1/field_actor.h"
 #include "pe1/pad_state.h"
 
 #define PE_RUN_MAP_DPAD     0x00F0u   /* up/right/down/left, internal pad bits */
@@ -49,14 +50,20 @@ static const int32_t s_entry_factor[] = { 0x10000, 0x18000, 0x20000, 0x30000, 0x
 static int s_always_run = 1;
 static int s_run_choice = 3, s_walk_choice = 3;   /* 1.75x field movement by default */
 static int s_combat_choice = 0, s_entry_choice = 0;
-static int32_t s_run_mask = 0x4000;               /* the run bit's own buttons (Circle) */
 
-static int pe_is_boost_value(int32_t mf) {
-    int i;
-    for (i = 1; i < PE_SPEED_CHOICES; ++i) if (mf == s_speed_factor[i]) return 1;
+static int32_t pe_speed(int choice) { return s_speed_factor[choice >= 0 && choice < PE_SPEED_CHOICES ? choice : 0]; }
+
+static int pe_on_player_move(void *ctx, void *user) {
+    PeHookPlayerMove *step = ctx;
+    (void)user;
+    if (!pe_game_loaded() || step->actor != pe_player() || *step->factor != PE_MOVE_FACTOR_STOCK) return 0;
+    if (step->combat) {
+        if (pe_in_battle() && g_BattleModeState == 0) *step->factor = pe_speed(s_combat_choice);
+    } else if (pe_free_field()) {
+        *step->factor = pe_speed(step->running ? s_run_choice : s_walk_choice);
+    }
     return 0;
 }
-static int32_t pe_speed(int choice) { return s_speed_factor[choice >= 0 && choice < PE_SPEED_CHOICES ? choice : 0]; }
 
 /* The raw pad as the game's internal button bits (Circle/Cross swapped) and the left stick. */
 typedef struct { uint32_t bits; int analog, x, y, stick; } PePad;
@@ -83,7 +90,7 @@ static PePad pe_read_pad(void) {
 static int pe_stick_runs(const PePad *p) {
     int dx, dy;
     if (p->bits & PE_PAD_CROSS) return 0;
-    if (s_always_run) return !(p->bits & (uint32_t)s_run_mask);
+    if (s_always_run) return !(p->bits & (uint32_t)g_FieldRenderFlagTable[0]);
     dx = p->x - PE_STICK_CENTER;
     dy = p->y - PE_STICK_CENTER;
     return dx * dx + dy * dy >= PE_STICK_FULL_R2;
@@ -113,71 +120,36 @@ static int pe_on_pad_read(void *ctx, void *user) {
     return 0;
 }
 
-static void pe_entry_walk_tick(BattleEntity *player) {
-    static int s_walking, s_turning = 1;
-    static int32_t s_prev_mx, s_prev_mz, s_our_step;
-    const int32_t factor = s_entry_factor[s_entry_choice >= 0 && s_entry_choice < PE_ENTRY_CHOICES ? s_entry_choice : 0];
-    const int walk = pe_in_battle() && g_BattleModeState == 7 && player->actionMode == PE_ENTRY_ACTION_MODE;
-    const int32_t mx = walk ? player->motionX : 0, mz = walk ? player->motionZ : 0;
-    int push;
-    if (!walk || factor == 0x10000) {
-        s_walking = 0;
-    } else if (!s_walking) {
-        s_walking = 1;
-        s_turning = 1;                                   /* wait for a steady heading */
-        s_prev_mx = mx;
-        s_prev_mz = mz;
-    } else if (mx != s_prev_mx || mz != s_prev_mz) {     /* steady: within ~4 degrees, not reversed */
-        const int64_t ax = mx >> 8, az = mz >> 8, bx = s_prev_mx >> 8, bz = s_prev_mz >> 8;
-        const int64_t dot = ax * bx + az * bz;
-        s_turning = dot <= 0 || dot * dot * 1000 < (ax * ax + az * az) * (bx * bx + bz * bz) * 995;
-        s_prev_mx = mx;
-        s_prev_mz = mz;
-    }
-    push = s_walking && !s_turning && (mx || mz);
-    if (!push) {
-        if (s_our_step && player->animStep == s_our_step) player->animStep = PE_ANIM_STEP_STOCK;
-        s_our_step = 0;
-        return;
-    }
-    {
-        const int64_t extra = (int64_t)factor - 0x10000;  /* per logic frame */
-        player->posX.fixed += (int32_t)(((int64_t)mx * extra) >> 16);
-        player->posZ.fixed += (int32_t)(((int64_t)mz * extra) >> 16);
-    }
-    if (player->animStep == PE_ANIM_STEP_STOCK || (s_our_step && player->animStep == s_our_step)) {
-        s_our_step = factor;
-        player->animStep = s_our_step;
-    }
+/* Read the game's current mapping on each poll. No remembered mask can leak
+ * across load, remapping, a cutscene or disabling the mod. */
+static int pe_on_pad_map(void *ctx, void *user) {
+    PeHookPadMap *pad = ctx;
+    (void)user;
+    if (pe_game_loaded() && pe_free_field() && s_always_run)
+        *pad->run_mask = pad->buttons & (unsigned)*pad->run_mask ? 0 : PE_RUN_MAP_DPAD;
+    return 0;
 }
 
-static void pe_move_tick(void) {
-    const PePad p = pe_read_pad();
-    const int dpad = (p.bits & PE_RUN_MAP_DPAD) != 0, in_field = pe_free_field();
+static int pe_on_actor_step(void *ctx, void *user) {
+    PeHookActorStep *step = ctx;
     BattleEntity *player = pe_player();
-    int32_t map, want_map, mf, want;
-    int run_held, moving, running, combat;
-    if (!pe_game_loaded() || !player) return;
-
-    /* Always run: retarget the run entry of the mapping table (any value not ours is the game's). */
-    map = g_FieldRenderFlagTable[0];
-    if (map != (int32_t)PE_RUN_MAP_DPAD && map != 0) s_run_mask = map;
-    run_held = (p.bits & (uint32_t)s_run_mask) != 0;
-    want_map = s_run_mask;
-    if (s_always_run && in_field) want_map = run_held ? 0 : (int32_t)PE_RUN_MAP_DPAD;
-    if (want_map != map) g_FieldRenderFlagTable[0] = want_map;
-
-    pe_entry_walk_tick(player);
-    mf = player->moveFactor;
-    moving = in_field && (dpad || p.stick);
-    running = dpad ? (s_always_run ? !run_held : run_held) : pe_stick_runs(&p);
-    combat = pe_in_battle() && g_BattleModeState == 0;
-    want = mf;
-    if (combat && (mf == PE_MOVE_FACTOR_STOCK || pe_is_boost_value(mf))) want = pe_speed(s_combat_choice);
-    else if (moving && (mf == PE_MOVE_FACTOR_STOCK || pe_is_boost_value(mf)))
-        want = pe_speed(running ? s_run_choice : s_walk_choice);
-    else if (!moving && pe_is_boost_value(mf)) want = PE_MOVE_FACTOR_STOCK;
-    if (want != mf) player->moveFactor = want;
+    (void)user;
+    if (!pe_game_loaded() || !player || step->actor != player ||
+        !pe_in_battle() || g_BattleModeState != 7 || player->actionMode != PE_ENTRY_ACTION_MODE)
+        return 0;
+    /* Do not amplify a turn toward the entry destination. Use this frame's
+     * original heading, not cached state from a previous actor or encounter. */
+    unsigned turn = ((unsigned)player->facingAngle - (unsigned)((const FieldActor *)player)->saved_rot_y) & 0xFFF;
+    if (turn > 46 && turn < 0x1000 - 46) return 0;
+    int factor = s_entry_factor[s_entry_choice >= 0 && s_entry_choice < PE_ENTRY_CHOICES ? s_entry_choice : 0];
+    if (step->anim) {
+        if (*step->anim == PE_ANIM_STEP_STOCK && (player->motionX || player->motionZ))
+            *step->anim = factor;
+    } else {
+        int64_t value = (int64_t)*step->speed * factor / 0x10000;
+        *step->speed = value > INT32_MAX ? INT32_MAX : value < INT32_MIN ? INT32_MIN : (int32_t)value;
+    }
+    return 0;
 }
 
 void pe_move_register(const char *mod_id) {
@@ -187,6 +159,12 @@ void pe_move_register(const char *mod_id) {
     pe_menu_register_choice(PE_PAGE_MOVEMENT, "Combat speed", "How fast Aya moves during battle.", &s_combat_choice, s_speed_names, PE_SPEED_CHOICES);
     pe_menu_register_choice(PE_PAGE_MOVEMENT, "Battle start speed", "Aya's walk to her spot as a fight opens.", &s_entry_choice,
                             s_entry_names, PE_ENTRY_CHOICES);
-    pe_menu_register_tick(pe_move_tick);
+    pe_mod_log(mod_id, "movement: always_run=%d run=%s walk=%s combat=%s battle_start=%s",
+        s_always_run, s_speed_names[s_run_choice], s_speed_names[s_walk_choice],
+        s_speed_names[s_combat_choice], s_entry_names[s_entry_choice]);
+
     pe_hook_add(PE_HOOK_PAD_READ, pe_on_pad_read, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_PAD_MAP, pe_on_pad_map, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_ACTOR_STEP, pe_on_actor_step, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_PLAYER_MOVE, pe_on_player_move, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

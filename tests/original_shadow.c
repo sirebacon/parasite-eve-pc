@@ -15,7 +15,11 @@ int Render_ApplyScreenTint(void);
 int Render_DrawSpriteEntry(GeomEntry *entry);
 int Render_ClipPoint(int x,int y,int z);
 #include <libgpu.h>
+#include <psyz/video.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+extern bool InitPlatform(void);
 #include <string.h>
 _Static_assert(sizeof(Pe1FadeTile)==sizeof(TILE),"native game fade tile size");
 _Static_assert(offsetof(Pe1FadeTile,r)==offsetof(TILE,r0),"native game fade colour");
@@ -26,8 +30,55 @@ _Static_assert(sizeof(((Pe1FadeTpage *)0)->mode)==sizeof(((DR_TPAGE *)0)->code[0
 _Static_assert(sizeof(RenderShadowQuad)==sizeof(POLY_FT4),"native shadow packet size");
 _Static_assert(offsetof(RenderShadowQuad,xy3)==offsetof(POLY_FT4,x3),"native shadow payload");
 #define CHECK(x) do { if(!(x)) { fprintf(stderr,"line %d: %s\n",__LINE__,#x); return 1; } } while(0)
-int main(void)
+static int widescreen_gpu_capture(void)
 {
+    if(!InitPlatform())return 77;
+    ResetGraph(0);
+    DISPENV display;DRAWENV draw;
+    SetDefDispEnv(&display,0,0,320,224);PutDispEnv(&display);
+    SetDefDrawEnv(&draw,0,0,320,224);draw.isbg=1;
+    setRGB0(&draw,0,0,0);PutDrawEnv(&draw);SetDispMask(1);
+    CHECK(Psyz_VideoSetWidescreen(1)==0);
+    const unsigned scales[]={1,2,4,7,8};
+    const int spans[3][2]={{-96,416},{0,512},{-192,320}};
+    for(unsigned scale=0;scale<5;++scale){
+        CHECK(Psyz_VideoSetInternalResolution(scales[scale])==0);
+        int width=0,height=0;
+        unsigned char *pixels=Psyz_VideoAllocRenderedFrame(&width,&height);
+        free(pixels); /* apply the pending resolution before submitting geometry */
+        for(unsigned picture=0;picture<3;++picture){
+            Psyz_VideoSetWidescreenPicture(0,spans[picture][0],spans[picture][1]);
+            PutDrawEnv(&draw);
+            TILE tiles[3];const int x[]={-32,336,152};
+            for(unsigned i=0;i<3;++i){
+                Psyz_VideoSetWidescreenCentred(i==2);
+                setTile(&tiles[i]);setXY0(&tiles[i],x[i],96);setWH(&tiles[i],16,16);
+                setRGB0(&tiles[i],i==0?255:0,i==1?255:0,i==2?255:0);
+                DrawPrim(&tiles[i]);
+            }
+            Psyz_VideoSetWidescreenCentred(0);DrawSync(0);
+            pixels=Psyz_VideoAllocRenderedFrame(&width,&height);
+            CHECK(pixels && width>0 && height>0 && abs(width*9-height*16)<=5);
+            unsigned left=0,right=0,middle=0;double blue_x=0;
+            for(int y=0;y<height;++y)for(int column=0;column<width;++column){
+                const unsigned char *p=pixels+((size_t)y*width+column)*3;
+                if(column<width/5 && p[0]>200 && p[1]<20 && p[2]<20)++left;
+                if(column>width*4/5 && p[1]>200 && p[0]<20 && p[2]<20)++right;
+                if(p[2]>200 && p[0]<20 && p[1]<20){++middle;blue_x+=column;}
+            }
+            free(pixels);CHECK(middle>20);
+            CHECK(blue_x/middle>width*0.47 && blue_x/middle<width*0.53);
+            if(!picture)CHECK(left>20 && right>20);
+            printf("Widescreen GPU: x%u span%d..%d final %dx%d, edge pixels %u/%u, menu centre %.3f\n",
+                scales[scale],spans[picture][0],spans[picture][1],width,height,left,right,blue_x/middle/width);
+        }
+    }
+    Psyz_VideoSetWidescreen(0);
+    return 0;
+}
+int main(int argc,char **argv)
+{
+    if(argc==2 && !strcmp(argv[1],"--widescreen-gpu"))return widescreen_gpu_capture();
     FieldActor actors[3] = {0}, reflection = {0};
     RoomFxMirror mirror = {0};
     mirror.header.owner = &reflection;
@@ -113,6 +164,29 @@ int main(void)
             CHECK(ordering[16].address == (uintptr_t)&object);
             for (unsigned i = 0; i < 4; ++i) D_800A636C[i] = 64;
         }
+        /* The wider view must not lose faces at the old 0/320 boundaries.
+         * Check the original actor renderer, both DMA buffers and all four
+         * polygon packet classes wholly outside and across those boundaries. */
+        for(unsigned wide=0;wide<2;++wide){
+            Psyz_VideoSetWidescreen(wide);
+            for(unsigned slot=0;slot<2;++slot)for(int x=-96;x<=416;x+=8){
+                g_ActiveDrawSlot=slot;D_800B0E38.ordering[slot]=ordering;
+                D_800B1644[0]=(u16)x|(96u<<16);
+                D_800B1644[1]=(u16)(x+10)|(96u<<16);
+                D_800B1644[2]=(u16)x|(106u<<16);
+                D_800B1644[3]=(u16)(x+10)|(106u<<16);
+                ordering[16].address=(uintptr_t)&object;
+                Render_DrawTexturedQuads(&object);
+                CHECK(ordering[16].address==(uintptr_t)&packets.flat_tri[slot]);
+                CHECK(((RenderNativeTag *)&packets.flat_tri[slot])->address==(uintptr_t)&packets.flat_quad[slot]);
+                CHECK(((RenderNativeTag *)&packets.flat_quad[slot])->address==(uintptr_t)&packets.tri[slot]);
+                CHECK(((RenderNativeTag *)&packets.tri[slot])->address==(uintptr_t)&packets.quad[slot]);
+                CHECK(((RenderNativeTag *)&packets.quad[slot])->address==(uintptr_t)&object);
+                CHECK(packets.quad[slot].sxy0==D_800B1644[0] && packets.quad[slot].sxy3==D_800B1644[3]);
+            }
+        }
+        Psyz_VideoSetWidescreen(0);
+        puts("Original actor edges: 1040 faces across both buffers and aspect modes retain signed positions beyond 4:3");
         D_800B0E38.ordering[0] = D_800B0E38.ordering[1] = NULL;
     }
 

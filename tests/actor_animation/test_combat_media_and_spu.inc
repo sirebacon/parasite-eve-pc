@@ -1,3 +1,46 @@
+/* Reproduce the IRQ/kernel -> SPU/audio half of the observed deadlock while
+ * the original movie shutdown runs on the main thread. Each attempt starts
+ * with the IRQ holding the kernel; its delayed SPU write gives shutdown time
+ * to reach its CD command. A watchdog fails cleanly instead of stranding CI. */
+static SDL_Semaphore *movie_lock_held,*movie_lock_proceed,*movie_lock_finished;
+static long movie_lock_irq(void) {
+    SDL_SignalSemaphore(movie_lock_held);
+    SDL_WaitSemaphore(movie_lock_proceed);
+    SDL_Delay(20);
+    Psyz_SpuWrite(0x18C,0);
+    return 0;
+}
+static int movie_lock_worker(void *unused) {
+    (void)unused;DeliverEvent(0xFA0000FFu,0x1000);return 0;
+}
+static int movie_lock_watchdog(void *unused) {
+    (void)unused;
+    if(!SDL_WaitSemaphoreTimeout(movie_lock_finished,10000)) {
+        fprintf(stderr,"Movie CD command deadlocked against kernel IRQ/SPU write\n");fflush(stderr);_Exit(1);
+    }
+    return 0;
+}
+static int original_movie_audio_lock_order(void) {
+    if(!SDL_Init(SDL_INIT_EVENTS) || !SDL_SetEnvironmentVariable(SDL_GetEnvironment(),"PSYZ_AUDIO_CLOCK","video",true) || Psyz_AudioInit())return 0;
+    movie_lock_held=SDL_CreateSemaphore(0);movie_lock_proceed=SDL_CreateSemaphore(0);movie_lock_finished=SDL_CreateSemaphore(0);
+    if(!movie_lock_held || !movie_lock_proceed || !movie_lock_finished)return 0;
+    long event=OpenEvent(0xFA0000FFu,0x1000,0x1000,movie_lock_irq);
+    if(event==-1 || !EnableEvent(event))return 0;
+    SDL_Thread *watchdog=SDL_CreateThread(movie_lock_watchdog,"Movie lock watchdog",NULL);if(!watchdog)return 0;
+    for(unsigned attempt=0;attempt<32;++attempt) {
+        g_BootDisplayPlaybackActive=1;
+        SDL_Thread *irq=SDL_CreateThread(movie_lock_worker,"Movie lock IRQ",NULL);if(!irq)return 0;
+        SDL_WaitSemaphore(movie_lock_held);
+        SDL_SignalSemaphore(movie_lock_proceed);
+        if(BootDisplay_WaitForCdAndRestoreCallbacks() || g_BootDisplayPlaybackActive)return 0;
+        SDL_WaitThread(irq,NULL);
+    }
+    SDL_SignalSemaphore(movie_lock_finished);SDL_WaitThread(watchdog,NULL);
+    CloseEvent(event);Psyz_AudioDestroy();
+    SDL_DestroySemaphore(movie_lock_held);SDL_DestroySemaphore(movie_lock_proceed);SDL_DestroySemaphore(movie_lock_finished);
+    puts("Original movie shutdown: 32 contended kernel-IRQ/SPU/CD lock-order cycles completed without deadlock");return 1;
+}
+
 static int original_enemy_death(void)
 {
     extern void Battle_StepEntityAnimState(BattleEntity *);
@@ -502,6 +545,66 @@ static int original_save_title_images(void)
     puts("Original save titles: 2700 USA CPU states across all450 room names, 36 full64-byte titles and complete M064 card header passed");return 1;
 }
 
+static void original_card_update_crc(u8 *image) {
+    memset(image + 0x1C8C, 0, 4);
+    u16 crc = 0xFFFF;
+    for (unsigned i = 0; i < 0x2000; ++i) {
+        crc ^= (u16)image[i] << 8;
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (u16)((crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1);
+    }
+    u32 stored = crc ^ 0xFFFFu;
+    memcpy(image + 0x1C8C, &stored, 4);
+}
+#ifdef PE_MODS
+static unsigned card_read_hooks;
+static int card_read_hook(void *ctx, void *user) {
+    (void)user;
+    if (!g_MemCardLoadSucceeded || memcmp(&g_SaveRuntimeState, (u8 *)ctx + 0x100, sizeof(g_SaveRuntimeState)))
+        card_read_hooks += 1000;
+    ++card_read_hooks;
+    return 0;
+}
+#endif
+
+static int native_save_hook_safety(void) {
+    memset(g_MemCardFileBuffer, 0, sizeof(g_MemCardFileBuffer));
+    SaveRuntimeState *candidate = (SaveRuntimeState *)(g_MemCardFileBuffer + 0x100);
+    candidate->windows.header.saveName[0] = 0xFF;
+    candidate->windows.header.ayaName[0] = 0xFF;
+    candidate->player.aya.inventory_slot_count = 50;
+    candidate->player.aya.equipped_weapon_slot = -1;
+    candidate->player.aya.equipped_armor_slot = -1;
+    g_SaveMetadataWindowIndex = 0;
+    original_card_update_crc(g_MemCardFileBuffer);
+#ifdef PE_MODS
+    PeHookInit init = {0, "/tmp/pe-save-hook-test/parasite-eve.toml"};
+    pe_host_init(&init);
+    if (pe_hook_add(PE_HOOK_SAVE_READ, card_read_hook, NULL, 0, "host")) return 0;
+    card_read_hooks = 0;
+#endif
+    MenuWidget_InitPool(); Menu_CreateMemCardProgressWidget(0);
+    Save_LoadCardFileIntoRuntime();
+    if (!g_MemCardLoadSucceeded) return 0;
+    SaveRuntimeState before = g_SaveRuntimeState;
+    for (unsigned fault = 0; fault < 3; ++fault) {
+        u32 link = fault == 0 ? 0x12345678 : 0;
+        memcpy(g_MemCardFileBuffer + 0x13E4 + 0x818 + 0x68, &link, 4);
+        if (fault == 2) candidate->player.aya.equipped_weapon_slot = 50;
+        original_card_update_crc(g_MemCardFileBuffer);
+        if (fault == 1) g_MemCardFileBuffer[0x100] ^= 1;
+        MenuWidget_InitPool(); Menu_CreateMemCardProgressWidget(0);
+        Save_LoadCardFileIntoRuntime();
+        if (g_MemCardLoadSucceeded || memcmp(&before, &g_SaveRuntimeState, sizeof(before))) return 0;
+#ifdef PE_MODS
+        if (card_read_hooks != 1) return 0;
+#endif
+    }
+    MenuWidget_InitPool(); g_MenuDeferredCallback = NULL;
+    puts("Save load transaction: CRC/link/inventory failures preserve runtime; read hooks observe committed state exactly once");
+    return 1;
+}
+
 static int original_save_card_images(PeDisc *disc)
 {
     PeDiscFile archive,exe;
@@ -609,6 +712,24 @@ static int original_save_card_images(PeDisc *disc)
     }
     /* Execute the complete original loader, including real modal widgets.
      * Synthetic image payloads deliberately exercise 32-bit timer wrapping. */
+    /* The byte-pattern fixtures above test lossless serialization, not valid
+     * inventory contents. Give the loader a structurally valid inventory. */
+    SaveRuntimeState *serialized = (SaveRuntimeState *)(g_MemCardFileBuffer + 0x100);
+    memset(&serialized->player, 0, sizeof(serialized->player));
+    serialized->player.aya.inventory_slot_count = 50;
+    serialized->player.aya.equipped_weapon_slot = -1;
+    serialized->player.aya.equipped_armor_slot = -1;
+    original_card_update_crc(g_MemCardFileBuffer);
+#ifdef PE_MODS
+    static int hook_registered;
+    if (!hook_registered) {
+        PeHookInit init = {0, "/tmp/pe-save-hook-test/parasite-eve.toml"};
+        pe_host_init(&init);
+        if (pe_hook_add(PE_HOOK_SAVE_READ, card_read_hook, NULL, 0, "host")) return 0;
+        hook_registered = 1;
+    }
+    card_read_hooks = 0;
+#endif
     static u8 image[0x2000];memcpy(image,g_MemCardFileBuffer,sizeof(image));
     int queued=g_AkaoMessageQueueCount;
     g_SaveMetadataWindowIndex=0;
@@ -622,19 +743,38 @@ static int original_save_card_images(PeDisc *disc)
        GAME_TIME_COUNTER(2)!=(s32)((u32)g_SaveRuntimeState.windows.header.playTimeMinutes*60u) ||
        GAME_TIME_COUNTER(0)!=(s32)((u32)g_SaveRuntimeState.windows.header.gameTimeMinutes*60u))valid=0;
     for(unsigned i=0;i<6;++i)if(g_KeyItemRecords[i].ammo!=g_SaveRuntimeState.categoryCounts[i])valid=0;
+#ifdef PE_MODS
+    if (card_read_hooks != 1) valid = 0;
+#endif
     const unsigned damaged[]={0,4,0x100,0x13E4,0x1C8C,0x1C90,0x1FFF};
-    for(unsigned fault=0;fault<8;++fault) {
+    for(unsigned fault=0;fault<20;++fault) {
         memcpy(g_MemCardFileBuffer,image,sizeof(image));
         if(fault<7) g_MemCardFileBuffer[damaged[fault]]^=0x40;
         else {
-            u32 bad=0x12345678;memcpy(g_MemCardFileBuffer+0x13E4+0x818+0x68,&bad,4);
-            memset(g_MemCardFileBuffer+0x1C8C,0,4);
-            u16 crc=0xFFFF;
-            for(unsigned i=0;i<sizeof(image);++i) {
-                crc^=(u16)g_MemCardFileBuffer[i]<<8;
-                for(unsigned b=0;b<8;++b)crc=(u16)((crc&0x8000)?(crc<<1)^0x1021:crc<<1);
+            if (fault == 7) {
+                u32 bad = 0x12345678; memcpy(g_MemCardFileBuffer + 0x13E4 + 0x818 + 0x68, &bad, 4);
+            } else {
+                SaveRuntimeState *candidate = (SaveRuntimeState *)(g_MemCardFileBuffer + 0x100);
+                AyaSaveState *aya = &candidate->player.aya;
+                InventoryRuntime *inv = &candidate->player.runtime.inventory;
+                switch (fault) {
+                case 8: inv->equipment[0] = (ItemDataRecord){.iconId=1,.itemId=0x78,.kind=255}; break;
+                case 9: inv->equipment[0] = (ItemDataRecord){.iconId=1,.itemId=0x78,.kind=1,.tailCount=11}; break;
+                case 10: inv->equipment[0] = (ItemDataRecord){.iconId=1,.itemId=0x78,.kind=1,.tailCapacity=255}; break;
+                case 11: aya->inventory_items[0] = 0x180; break;
+                case 12: inv->storage[99] = -1; break;
+                case 13: inv->specialStorage[81] = 0x209; break;
+                case 14: aya->inventory_items[0] = 0x100; break;
+                case 15: aya->equipped_weapon_slot = -128; break;
+                case 16: aya->equipped_armor_slot = 50; break;
+                case 17: aya->inventory_slot_count = 51; break;
+                case 18: aya->equipped_weapon_slot = 0; break;
+                case 19:
+                    inv->equipment[0] = (ItemDataRecord){.iconId=1,.itemId=0x78,.kind=1};
+                    aya->inventory_items[0] = 0x100; aya->equipped_armor_slot = 0; break;
+                }
             }
-            u32 stored=crc^0xFFFFu;memcpy(g_MemCardFileBuffer+0x1C8C,&stored,4);
+            original_card_update_crc(g_MemCardFileBuffer);
         }
         SaveRuntimeState before_runtime=g_SaveRuntimeState;Pe1GameState before_game=g_GameState;
         AyaBattleState before_aya=g_AyaBattleState;u32 before_variables[512];
@@ -644,6 +784,9 @@ static int original_save_card_images(PeDisc *disc)
         MenuWidget_InitPool();Menu_CreateMemCardProgressWidget(0);g_MemCardLoadSucceeded=1;
         Save_LoadCardFileIntoRuntime();
         child=MenuWidget_GetCurrentNode();
+#ifdef PE_MODS
+        if (card_read_hooks != 1) valid = 0;
+#endif
         if(g_MemCardLoadSucceeded || memcmp(&before_runtime,&g_SaveRuntimeState,sizeof(before_runtime)) ||
            memcmp(&before_game,&g_GameState,sizeof(before_game)) || memcmp(&before_aya,&g_AyaBattleState,sizeof(before_aya)) ||
            memcmp(before_variables,g_ScriptVariableBank,sizeof(before_variables)) ||
@@ -661,6 +804,9 @@ static int original_save_card_images(PeDisc *disc)
     memcpy(g_MemCardFileBuffer,image,sizeof(image));MenuWidget_InitPool();Menu_CreateMemCardProgressWidget(0);
     Save_LoadCardFileIntoRuntime();
     if(!g_MemCardLoadSucceeded || memcmp(image,g_MemCardFileBuffer,sizeof(image)))valid=0;
+#ifdef PE_MODS
+    if (card_read_hooks != 2) valid = 0;
+#endif
     MenuWidget_InitPool();g_MenuDeferredCallback=NULL;g_AkaoMessageQueueCount=queued;
     if(!original_card_file_services(g_MemCardFileBuffer))valid=0;
     /* A valid New Game image can also finish the original success callback.
@@ -726,7 +872,7 @@ static int original_save_card_images(PeDisc *disc)
     memcpy(g_ScriptVariableBank,saved_variables,sizeof(saved_variables));D_8009D2E8=saved_move;
     g_SceneDispatchToken=saved_token;g_SaveTitleStyleFlag=saved_style;g_ScreenTint.fadeMode=saved_fade;
     g_SaveIoCursor=saved_cursor;g_SaveSjisFormatArguments=saved_arguments;memcpy(g_SaveTitleBuffer,title,sizeof(title));
-    if(valid)puts("Original save image: 24 full 8 KiB USA MIPS images, SJIS titles/icons, CRC, unaligned tails and full loader with modal dialogs, CRC/link rejection and retry passed");
+    if(valid)puts("Original save image: 24 full 8 KiB USA MIPS images, SJIS titles/icons, CRC, unaligned tails and full loader with modal dialogs, CRC/link/inventory rejection, committed-state hooks and retry passed");
     return valid;
 }
 
@@ -1066,6 +1212,7 @@ static int original_credit_playback(PeDisc *disc)
     /* Campaign FMVs can reach credits without opening an SDL audio stream. */
     Psyz_AudioDestroy();
     int start_status=BootDisplay_StartPlayback();
+    Psyz_AudioPause(); /* only this fixture's explicit PCM pulls consume XA */
     if(start_status){fprintf(stderr,"Credits playback start failed: %d\n",start_status);return 0;}
     if(BootDisplay_SetCdFilter(1))return 0;
     size_t observed=Psyz_CdPullSamples(actual,frames);unsigned nonzero=0;
@@ -1085,6 +1232,15 @@ static int original_credit_playback(PeDisc *disc)
         if(BootDisplay_StartPlayback()!=-1 || g_BootDisplayPlaybackActive)return 0;
         g_CdImage=disc;disc->sector_size=sector_size;g_BootDisplayPlaybackSectorBuffer=buffer;g_BootDisplayPlaybackEndPos=end;
     }
+    /* Rejecting a replacement also retires the previously active stream. */
+    if(BootDisplay_StartPlayback())return 0;
+    char *old_buffer=g_BootDisplayPlaybackSectorBuffer;
+    g_BootDisplayPlaybackSectorBuffer=NULL;
+    if(BootDisplay_StartPlayback()!=-1 || g_BootDisplayPlaybackActive || Psyz_CdPullSamples(actual,1024))return 0;
+    g_BootDisplayPlaybackSectorBuffer=old_buffer;
+    struct PsyzCdRead late_read={.sector=(u32)start,.size=2352,.buffer=actual};
+    if(BootDisplay_StepPlaybackTransfer(&late_read)!=-1)return 0;
+    if(BootDisplay_WaitForCdAndRestoreCallbacks() || BootDisplay_WaitForCdAndRestoreCallbacks())return 0;
     for(unsigned fault=0;fault<2;++fault){
         g_BootDisplayState=g_BootDisplayDone=0;
         g_BootDisplayPlaybackEndPos=start+3;g_BootDisplayPlaybackFile.size=3*2048;
@@ -1103,6 +1259,7 @@ static int original_credit_playback(PeDisc *disc)
         Boot_BuildRenderFlagTable();g_GameStateFlags=images?0x20000:0;
         credits_vblanks=credits_pcm_frames=credits_pcm_nonzero=0;
         credits_seen_images=credits_pixel_probes=credits_visible_pixels=0;credits_probe_frame=UINT32_MAX;
+        Psyz_AudioPause();
         VSyncCallbacks(0,credits_drive_audio);
         status=BootDisplay_RunDisplay();VSyncCallbacks(0,NULL);
         printf("Original credits full sprite flow: images=%u status=%d frame=%u timer=%d state=%d done=%d vblanks=%u pcm=%u nonzero=%u seen=%08x probes=%u pixels=%u\n",
@@ -1827,6 +1984,36 @@ static int original_movie_uploads(PeDisc *disc)
         DecDCToutCallback(NULL);
         if(first)MenuCardFirst_ResetDisplayState();else MenuCard_ResetDisplayState();
         if(Psyz_CdPullSamples(samples,1024)!=0){fprintf(stderr,"Movie XA continued after stop\n");valid=0;}
+    }
+    /* Replacement failure, decode/read failure, disc change and repeated
+     * teardown must all retire XA immediately in both original players. */
+    for(unsigned first=0;first<2;++first)for(unsigned fault=0;fault<4;++fault) {
+        u8 *buffers[]={arena};short samples[2048];
+        g_CdImage=disc;g_DrawEnabled.bits=0;
+        if(!(first?MenuCardFirst_InitVideoBuffers(1,buffers):MenuCard_InitVideoBuffers(1,buffers)) ||
+           !(first?MenuCardFirst_OpenVideo(1):MenuCard_OpenVideo(1)))return 0;
+        if(Psyz_CdPullSamples(samples,1024)!=1024)return 0;
+        if(fault==0) {
+            if(first?MenuCardFirst_OpenVideo(47):MenuCard_OpenVideo(47))return 0;
+        } else if(fault==1) {
+            g_CdImage=NULL;
+            if(first?MenuCardFirst_OpenVideo(1):MenuCard_OpenVideo(1))return 0;
+        } else if(fault==2) {
+            u64 size=disc->image_size;disc->image_size=0;
+            int playing=first?MenuCardFirst_StepVideo():MenuCard_StepVideo();
+            disc->image_size=size;
+            if(playing)return 0;
+        } else {
+            CdRom_BindImage(NULL,NULL);
+        }
+        if(Psyz_CdPullSamples(samples,1024)!=0)return fprintf(stderr,"Stale movie audio first=%u fault=%u\n",first,fault),0;
+        for(unsigned repeat=0;repeat<2;++repeat)
+            if(first)MenuCardFirst_ResetDisplayState();else MenuCard_ResetDisplayState();
+        if(fault==3) {
+            PeDiscFile archive;
+            if(!pe_disc_find(disc,"PE.IMG",&archive))return 0;
+            CdRom_BindImage(disc,&archive);
+        } else g_CdImage=disc;
     }
     if(!paused)Psyz_AudioUnpause();
     g_MenuSaveBgFadeState=background;

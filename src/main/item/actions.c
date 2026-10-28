@@ -1,4 +1,5 @@
 #include "common.h"
+#include "pe_hooks.h"
 #include "pe1/aya.h"
 #include "pe1/battle_cmd.h"
 #include "pe1/battle_modifiers.h"
@@ -413,8 +414,10 @@ void Inv_RebuildSelectableMask(void) {
     ItemDataRecord *item;
     for (list = 0; list < ListCount(); list++) {
         RestoreList(list);
-        for (i = 0; i < g_InvSlotLimit; i++)
-            if ((0xFE >> Kind(i)) & 1) break;
+        for (i = 0; i < g_InvSlotLimit; i++) {
+            unsigned kind = Kind(i);
+            if (kind < 8 && ((0xFEu >> kind) & 1)) break;
+        }
         hasWeapon |= i < g_InvSlotLimit;
         for (i = 0; i < g_InvSlotLimit; i++)
             if (Kind(i) == 9) break;
@@ -937,6 +940,7 @@ int Inv_GetSlotHighlightState(int spell, int available) {
     }
     table = Aya_GetParasiteSpellUnlockTable();
     cost = table[spell].cost;
+    PE_HOOK(PE_HOOK_POWER_COST, (&(PeHookPowerCost){spell, &cost}));
     armor = LookupTrackedItem(g_InventoryRuntime.tracked[2]);
     if (armor != 0) {
         for (i = 0; i < armor->tailCount; i++) {

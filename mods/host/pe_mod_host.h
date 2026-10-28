@@ -13,6 +13,7 @@
  *   Events   pe_event_id() names a mod-defined event; pe_event_emit() runs its
  *            handlers. Mods announce things without knowing who listens.
  *   Files    pe_mod_path() builds a path beside the user's preferences.
+ *   Saves    pe_save_register() (pe_save.h): per-save state the host saves, loads and carries.
  */
 
 #include <stddef.h>
@@ -63,6 +64,10 @@ typedef struct PeLogLine { const char *tag, *text; } PeLogLine;
 void pe_toast(const char *text);
 
 /* host internals shared by its own files */
+/* Around every call into a mod: what crash reports name as the running mod code
+ * (what: "hook", "per-frame tick", "F1 row"...; detail: which one, or NULL). */
+void pe_mod_call_begin(const char *mod_id, const char *what, const char *detail);
+void pe_mod_call_end(void);
 void pe_menu_load_settings(void);
 void pe_menu_save_settings(void);
 void pe_panel_install(void);

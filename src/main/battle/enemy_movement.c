@@ -196,6 +196,7 @@ void Battle_StepEnemyMovement(BattleEntity *entity)
         Battle_UpdateEntityFacing(entity);
     }
     flagCore->coreFlags = (flagCore->coreFlags & ~0x6000) | 0x4000;
+    PE_HOOK(PE_HOOK_ENEMY_HIT_END, entity);
 }
 
 int Battle_CalcRelativeAngle(BattleEntity *, BattleEntity *);

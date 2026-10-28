@@ -73,4 +73,29 @@ typedef union RenderBufferSlotAddress {
     ((RenderBufferPrefix *)((char *)(pointer) - \
         PE1_OFFSETOF(RenderBufferPrefix, other_buffers[1])))
 
+/* Widescreen: game pixels drawn past each side of the 320-pixel screen (0.3
+ * of it: the presenter's 3/4 squeeze holds a sixth past each side, plus up
+ * to 39 more on the side the view slides to at a room's end). */
+#define RENDER_WIDESCREEN_MARGIN 96
+/* The span of the background picture, in screen x, that the tiles linked
+ * into a draw slot's ordering table cover without a gap (always at least
+ * 0..320). Commit hands it to the presenter for the buffer at VRAM row
+ * buffer_y and starts the slot's next frame; buffer_y < 0 only discards it. */
+void Render_GetWidescreenPicture(int slot, int *left, int *right);
+void Render_CommitWidescreenPicture(int slot, int buffer_y);
+/* Draws the 2D layers, ordering-table entries top_entry down to 1, centred in
+ * the 16:9 view instead of following the view's shift at a room's end, so a
+ * menu or dialogue sits in the middle while the room keeps filling the view
+ * (and stays put while a cutscene scrolls the room). Entry 1 holds the menu
+ * and text code, entry 2 the dialogue's backdrop; top_entry 0 centres
+ * nothing. Call after the frame's packets are linked. */
+void Render_CentreWidescreenOverlay(int slot, RenderNativeTag *ordering, int top_entry);
+
+/* Widescreen: shows the room and its models (entries above the screen
+ * layers) at the camera's sub-pixel position, so camera pans move evenly at
+ * any internal resolution. Nothing outside widescreen or when the camera did
+ * not follow its point this frame. Call after the frame's packets are linked
+ * and before Render_CommitWidescreenPicture, which hands the position on. */
+void Render_LinkFieldSubpixel(int slot, RenderNativeTag *ordering);
+
 #endif

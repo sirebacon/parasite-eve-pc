@@ -13,6 +13,8 @@
 #include "pe1/render_prim.h"
 #include "pe1/render_tint.h"
 
+#include <math.h>
+
 /* Geometry animation control: reset, update and script setup commands. */
 
 int Render_ResetAllEntries(void) {
@@ -527,6 +529,62 @@ int Render_RestoreBounds(void) {
     view->maxY = g_GeomScroll.state.position.boundsMaxY;
     return 0;
 }
+
+/* Widescreen: the camera follows the point projected to whole pixels
+ * and eases by halves, dropping the fraction at both steps, so a slow pan
+ * moves in uneven whole-pixel steps (2, 2, 1, ...). The same steps are kept
+ * here without rounding, and the field is drawn shifted by the part the game
+ * dropped (Render_GetCameraSubpixel); the game's own camera is unchanged. */
+static struct {
+    double offset_x, offset_y; /* cameraOffsetX/Y without rounding */
+    double target_x, target_y; /* camera position without rounding, clamped */
+    s16 game_x, game_y;        /* the game's cameraOffsetX/Y offset_x/y follow */
+    s16 position_x, position_y; /* the game's camera position this frame */
+    u16 screen_x, screen_y;    /* the game's GTE screen offset this frame */
+    u8 tracking;
+    u8 fresh;
+} s_ExactCamera;
+
+/* RTPS of the full 16.16 point (the game drops the fraction first). */
+static int Render_ProjectExact(const GteMatrix *matrix, const s32 *position, s32 distance,
+                               double *x, double *y) {
+    double point[3];
+    double view[3];
+    int i;
+
+    for (i = 0; i < 3; ++i)
+        point[i] = position[i] / 65536.0;
+    for (i = 0; i < 3; ++i)
+        view[i] = matrix->t[i] + (matrix->m[i][0] * point[0] + matrix->m[i][1] * point[1] +
+                                  matrix->m[i][2] * point[2]) / 4096.0;
+    if (view[2] < 1.0)
+        return 0;
+    *x = 160.0 + view[0] * distance / view[2];
+    *y = 112.0 + view[1] * distance / view[2];
+    return 1;
+}
+
+static double Render_ClampExact(double value, int low, int high) {
+    return value < low ? low : (value > high ? high : value);
+}
+
+int Render_GetCameraSubpixel(float *dx, float *dy, int *camera_x) {
+    const GeomScrollCoordinates *position = &g_GeomScroll.state.position;
+    int fresh = s_ExactCamera.fresh;
+
+    *dx = *dy = 0.0f;
+    *camera_x = position->x;
+    s_ExactCamera.fresh = 0;
+    if (!fresh || position->x != s_ExactCamera.position_x ||
+        position->y != s_ExactCamera.position_y ||
+        position->screenOffsetX != s_ExactCamera.screen_x ||
+        position->screenOffsetY != s_ExactCamera.screen_y)
+        return 0;
+    *dx = (float)Render_ClampExact(s_ExactCamera.position_x - s_ExactCamera.target_x, -2, 2);
+    *dy = (float)Render_ClampExact(s_ExactCamera.position_y - s_ExactCamera.target_y, -2, 2);
+    return 1;
+}
+
 /* Follow the projected world position within the selected viewport. */
 
 int Render_SetViewport(const s32 *position) {
@@ -599,6 +657,30 @@ int Render_SetViewport(const s32 *position) {
     gte_stsxy2(local.projected);
     screen_x = local.projected[0];
     screen_y = local.projected[1];
+    {
+        double exact_x = screen_x;
+        double exact_y = screen_y;
+
+        /* Far from the GTE's result (clamped or behind the camera): keep it. */
+        if (!Render_ProjectExact((const GteMatrix *)camera->position.matrixWords, position,
+                                 *camera->position.projectionDistance, &exact_x, &exact_y) ||
+            fabs(exact_x - screen_x) > 2.0 || fabs(exact_y - screen_y) > 2.0) {
+            exact_x = screen_x;
+            exact_y = screen_y;
+        }
+        if (camera->flags & 128) {
+            s_ExactCamera.offset_x = exact_x;
+            s_ExactCamera.offset_y = exact_y;
+        } else if (!s_ExactCamera.tracking ||
+                   camera->position.cameraOffsetX != s_ExactCamera.game_x ||
+                   camera->position.cameraOffsetY != s_ExactCamera.game_y) {
+            /* something else moved the camera: start from the game's */
+            s_ExactCamera.offset_x = camera->position.cameraOffsetX;
+            s_ExactCamera.offset_y = camera->position.cameraOffsetY;
+        }
+        s_ExactCamera.offset_x = (s_ExactCamera.offset_x + exact_x) * 0.5;
+        s_ExactCamera.offset_y = (s_ExactCamera.offset_y + exact_y) * 0.5;
+    }
     if (camera->flags & 128) {
         g_GeomScroll.state.position.cameraOffsetX = screen_x;
         g_GeomScroll.state.position.cameraOffsetY = screen_y;
@@ -651,6 +733,18 @@ int Render_SetViewport(const s32 *position) {
     }
     g_GeomScroll.state.position.screenOffsetX = view_x;
     g_GeomScroll.state.position.screenOffsetY = view_y;
+    s_ExactCamera.game_x = g_GeomScroll.state.position.cameraOffsetX;
+    s_ExactCamera.game_y = g_GeomScroll.state.position.cameraOffsetY;
+    s_ExactCamera.tracking = 1;
+    s_ExactCamera.target_x = Render_ClampExact(half_width - 160 + s_ExactCamera.offset_x,
+                                               view->minX, view->maxX);
+    s_ExactCamera.target_y = Render_ClampExact(half_height - 112 + s_ExactCamera.offset_y,
+                                               view->minY, view->maxY);
+    s_ExactCamera.position_x = (s16)Render_ClampExact(target_x, view->minX, view->maxX);
+    s_ExactCamera.position_y = (s16)Render_ClampExact(target_y, view->minY, view->maxY);
+    s_ExactCamera.screen_x = (u16)view_x;
+    s_ExactCamera.screen_y = (u16)view_y;
+    s_ExactCamera.fresh = 1;
     selected_x = target_x;
     if (g_GeomScroll.state.flags & 64) {
         int signed_y;

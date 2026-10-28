@@ -409,6 +409,7 @@ static void pe_panel_run(void) {
     pe_toast_block(1);
     Psyz_PauseHostClock_SDL3(true);
     Psyz_AudioPause();
+    Psyz_VideoSetSpeed(1);
     s_panel.open = 1;
     s_panel.dirty = 1;
     pe_open_page();
@@ -435,12 +436,15 @@ static bool pe_filter(const SDL_Event *ev) {
         pe_panel_event(ev);
         return true;
     }
+    if (s_prev_filter && s_prev_filter(ev)) {
+        return true;
+    }
     if ((ev->type == SDL_EVENT_KEY_DOWN && ev->key.scancode == SDL_SCANCODE_F1 && !ev->key.repeat) ||
         (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && ev->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
         pe_panel_run();
         return true;
     }
-    return s_prev_filter ? s_prev_filter(ev) : false;
+    return false;
 }
 
 void pe_panel_install(void) {

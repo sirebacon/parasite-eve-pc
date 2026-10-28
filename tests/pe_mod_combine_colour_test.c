@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -102,7 +105,21 @@ static void check_combine_colours(void) {
     assert(colour(-1)==1 && colour(50)==1);
     puts("Combine row colour checks passed: full health, every recipe, missing partners, settings and menu/move/battle guards.");
 }
-int main(void) {
+int main(int argc,char **argv) {
+    if(argc==2 && !strcmp(argv[1],"--panacea-off")) {
+        pe_panacea_register("pe_rebalance");
+        ItemDataRecord *r=&items[ITEM_ITEM25];
+        r->flags=0x41;r->iconId=5;items[ITEM_MEDICINE_4].iconId=9;
+        g_pe_panacea=0;ticks[0]();assert(r->flags==0x41 && r->iconId==5);
+        u8 original[]={0xFF};void *text=original;
+        PeHookTextLookup lookup={8,ITEM_ITEM25-1,&text};
+        hooks[PE_HOOK_TEXT_LOOKUP](&lookup,NULL);assert(text==original);
+        g_pe_panacea=1;ticks[0]();assert(r->flags==0x43 && r->iconId==9);
+        g_pe_panacea=0;ticks[0]();assert(r->flags==0x41 && r->iconId==5);
+        g_pe_panacea=1;ticks[0]();r->flags=0xA2;r->iconId=99;
+        g_pe_panacea=0;ticks[0]();assert(r->flags==0xA2 && r->iconId==99);
+        pe_panacea_shutdown();return 0;
+    }
     pe_panacea_register("pe_rebalance"); pe_combine_register("pe_rebalance");
     assert(g_pe_panacea && recipe_count()==4);
     items[ITEM_ITEM25].flags=0x40; items[ITEM_ITEM25].iconId=5;

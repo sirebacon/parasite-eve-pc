@@ -64,7 +64,7 @@ static PeRow s_rows[] = {
     { "Acid/Tranq vs resist %", "Chance vs resistant (vanilla 0).", 0, 20, 0, 100, 5, &s_status_resist, 0 },
     { "Acid/Tranq vs normal %", "Chance vs others (vanilla 50).", 50, 60, 0, 100, 5, &s_status_average, 0 },
     { "Poison strength %", "Acid poison damage per tick.", 100, 125, 50, 300, 5, &s_poison, 0 },
-    { "Critical bonus points", "Crit chance the effect adds (20).", 20, 40, 0, 80, 5, &s_crit, 0 },
+    { "Critical bonus points", "Crit chance the effect adds (20).", 20, 40, 20, 80, 5, &s_crit, 0 },
     { "Quickdraw bonus points", "Added to the speed-stat chance.", 0, 15, 0, 90, 5, &s_quickdraw, 0 },
     { "Attack Down dmg taken %", "Armor: damage Aya takes.", 100, 75, 50, 100, 5, &s_guard_attack_down, 0 },
     { "Slow AT dmg taken %", "Armor: damage Aya takes.", 100, 85, 50, 100, 5, &s_guard_slow_at, 0 },
@@ -99,7 +99,14 @@ static struct {
 } s_bt;
 static int s_in_battle, s_battle_frames;
 static uint32_t s_rng = 0x51ED270Bu;
-static int16_t s_poison_written[PE_ENEMY_SLOTS];
+static int16_t s_poison_written[PE_ENEMY_SLOTS], s_poison_original[PE_ENEMY_SLOTS];
+static void pe_restore_poison(void) {
+    for (int i = 0; i < PE_ENEMY_SLOTS; ++i) {
+        if (s_poison_written[i] && g_BattleEnemySlots[i].combatant.periodicDamage == s_poison_written[i])
+            g_BattleEnemySlots[i].combatant.periodicDamage = s_poison_original[i];
+        s_poison_written[i] = s_poison_original[i] = 0;
+    }
+}
 static int s_prev_hp = -1, s_refund_frac;
 
 static uint32_t pe_rand(void) { s_rng ^= s_rng << 13; s_rng ^= s_rng >> 17; s_rng ^= s_rng << 5; return s_rng; }
@@ -242,7 +249,7 @@ static int32_t pe_aa_ref(EnemyCombatant *enemy, int32_t hp) {
 
 static void pe_aa_fix(void) {
     if (!s_aa.fix_enemy) return;
-    if (s_aa.fix_enemy->hpAlive > 0 && s_aa.fix_enemy->hpAlive < s_aa.fix_floor) s_aa.fix_enemy->hpAlive = s_aa.fix_floor;
+    if (s_aa.fix_enemy->hpAlive < s_aa.fix_floor) s_aa.fix_enemy->hpAlive = s_aa.fix_floor;
     s_aa.fix_enemy = NULL;
 }
 
@@ -353,7 +360,6 @@ static int pe_on_enemy_hit(void *ctx, void *user) {
     nd = d;
     if (atk_pm != 1000 || both_pm != 1000 || bonus) {
         want = (int)(((int64_t)(s + pb + bonus) * atk_pm / 1000) * both_pm / 1000) - s;
-        if (want < 0) want = 0;
         if (both_pm != 1000) {
             nd = (unsigned)((uint64_t)d * (unsigned)both_pm / 1000u);
             if (nd > 0xFFFFu) nd = 0xFFFFu;
@@ -403,6 +409,13 @@ static int pe_on_enemy_hit(void *ctx, void *user) {
     if (s_bt.hits == 1)
         pe_mod_log("pe_rebalance", "first gun hit: shots=%u power %d->%d defense %u->%u bonus=%d predicted=%d hp=%d",
                    shots, pb, want, d, nd, bonus, s_hit.pred, (int)enemy->hpAlive);
+    return 0;
+}
+
+static int pe_on_enemy_hit_end(void *ctx, void *user) {
+    (void)ctx; (void)user;
+    pe_restore_hit();
+    pe_aa_fix();
     return 0;
 }
 
@@ -504,16 +517,19 @@ static void pe_battle_tick(void) {
         }
     }
     /* Poison strength: each enemy's periodicDamage once (never compounded). */
-    if (s_poison != 100) {
+    if (s_poison == 100) pe_restore_poison();
+    else {
         for (i = 0; i < PE_ENEMY_SLOTS; ++i) {
             EnemyCombatant *core = &g_BattleEnemySlots[i].combatant;
             int p, np;
-            if (!g_BattleEnemySlots[i].active) { s_poison_written[i] = 0; continue; }
+            if (!g_BattleEnemySlots[i].active) { s_poison_written[i] = s_poison_original[i] = 0; continue; }
             p = core->periodicDamage;
-            if (p <= 0 || p == s_poison_written[i]) continue;
-            np = p * s_poison / 100;
+            if (p <= 0) { s_poison_written[i] = s_poison_original[i] = 0; continue; }
+            if (!s_poison_written[i] || p != s_poison_written[i]) s_poison_original[i] = (s16)p;
+            np = s_poison_original[i] * s_poison / 100;
             if (np < 1) np = 1;
             if (np > 0x7FFF) np = 0x7FFF;
+            if (p == np) continue;
             core->periodicDamage = (s16)np;
             s_poison_written[i] = (int16_t)np;
             ++s_bt.poison_scaled;
@@ -556,19 +572,41 @@ static int pe_fast_volley_gun(unsigned *kind) {
     return *kind < 9u && (pe_installed_rof(5u) || pe_installed_rof(7u) || pe_installed_rof(10u));
 }
 
+/* Only undo values this feature actually replaced. Vanilla and disabled
+ * settings must never copy factory animation rows over authored actions. */
+static struct {
+    BattleAction *action;
+    u8 hold, global_hold;
+    int global_owned;
+} s_fast_hold;
+
 static void pe_fast_volley_tick(int battle) {
     unsigned kind = 0, mode;
     const int on = battle && pe_on() && s_fast_volley && pe_fast_volley_gun(&kind);
     Combatant *aya = pe_aya_core();
     BattleEntity *player = pe_player();
     int i;
-    if (aya && aya->action) {
-        BattleAction *a = aya->action;
-        const unsigned id = a->actionCode.bytes.actionIdByte;
-        if (id < 9u) {
-            const u8 want = on && id == kind ? 0 : g_BattleActionAnimRows.rows[id][2];
-            if (a->animMode[2] != want) a->animMode[2] = want;
-            if (on && id == kind && g_ActiveActor == aya) g_BattleActionAnimModes[2] = 0;
+    BattleAction *a = aya ? aya->action : NULL;
+    const unsigned id = a ? a->actionCode.bytes.actionIdByte : 9u;
+    if (s_fast_hold.action && (!on || a != s_fast_hold.action || id != kind)) {
+        if (a == s_fast_hold.action) {
+            if (a->animMode[2] == 0) a->animMode[2] = s_fast_hold.hold;
+            if (s_fast_hold.global_owned && g_ActiveActor == aya && g_BattleActionAnimModes[2] == 0)
+                g_BattleActionAnimModes[2] = s_fast_hold.global_hold;
+        }
+        memset(&s_fast_hold, 0, sizeof s_fast_hold);
+    }
+    if (on && a && id < 9u && id == kind) {
+        if (a != s_fast_hold.action || a->animMode[2] != 0) {
+            s_fast_hold.action = a;
+            s_fast_hold.hold = a->animMode[2];
+        }
+        a->animMode[2] = 0;
+        if (g_ActiveActor == aya) {
+            if (!s_fast_hold.global_owned || g_BattleActionAnimModes[2] != 0)
+                s_fast_hold.global_hold = g_BattleActionAnimModes[2];
+            s_fast_hold.global_owned = 1;
+            g_BattleActionAnimModes[2] = 0;
         }
     }
     if (!on || !player || s_follow_x100[kind] <= 100u) return;
@@ -584,6 +622,8 @@ static void pe_fast_volley_tick(int battle) {
 
 /* Quitting mid-battle: write the battle's rows anyway. */
 void pe_mod_effects_shutdown(void) {
+    pe_fast_volley_tick(0);
+    pe_restore_poison();
     if (!s_in_battle) return;
     pe_mod_log("pe_rebalance", "game closed in battle: %u gun hits, prediction %u/%u", s_bt.hits, s_bt.pred_ok,
                s_bt.pred_ok + s_bt.pred_bad);
@@ -621,7 +661,12 @@ static void pe_mod_effects_tick(void) {
     } else if (s_rules == RULES_CUSTOM && pe_matches(RULES_VANILLA)) {
         s_rules = s_rules_shown = RULES_VANILLA;
     }
-    if (!pe_game_loaded()) { s_in_battle = 0; return; }
+    if (!pe_game_loaded()) {
+        s_in_battle = 0;
+        memset(&s_fast_hold, 0, sizeof s_fast_hold);
+        memset(s_poison_written, 0, sizeof s_poison_written);
+        return;
+    }
     battle = pe_in_battle();
     if (battle && !s_in_battle) {
         pe_mod_log("pe_rebalance", "battle start (gun 0x%02X, rules %s)", pe_gun_id(), s_rules_names[s_rules]);
@@ -635,6 +680,7 @@ static void pe_mod_effects_tick(void) {
     s_in_battle = battle;
     if (battle) pe_note_reach();
     if (battle && pe_on()) pe_battle_tick();
+    else pe_restore_poison();
     pe_fast_volley_tick(battle);                          /* also restores the game's values when off */
 }
 
@@ -650,9 +696,12 @@ void pe_mod_effects_register(const char *mod_id) {
             pe_menu_register_int(PE_PAGE_MOD_EFFECTS, s_rows[i].label, s_rows[i].desc, s_rows[i].value,
                                  s_rows[i].min, s_rows[i].max, s_rows[i].step);
     }
+    /* Restore the selected preset after all saved individual rows have loaded. */
+    pe_apply_rules(s_rules);
     s_rules = pe_matches(RULES_REBALANCED) ? RULES_REBALANCED : pe_matches(RULES_VANILLA) ? RULES_VANILLA : RULES_CUSTOM;
     s_rules_shown = s_rules;
     pe_menu_register_tick(pe_mod_effects_tick);
     pe_hook_add(PE_HOOK_ENEMY_HIT, pe_on_enemy_hit, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_ENEMY_HIT_END, pe_on_enemy_hit_end, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_BATTLE_UPDATE, pe_on_battle_update, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

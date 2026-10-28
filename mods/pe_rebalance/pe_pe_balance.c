@@ -119,6 +119,7 @@ static int pe_on_spell(void *ctx, void *user) {
     Combatant *core = pe_aya_core();
     int vanilla_cost = 0, cost = 0;
     (void)user;
+    if (!core || (pe_in_battle() && g_ActiveActor != core)) return 0;
     if (spell->spell == 7u && s_scan_summary) pe_scan_summary(spell->target);
     if (!core) return 0;
     if (spell->spell <= 2u) {                          /* heals: a share of max HP, never below vanilla */
@@ -131,10 +132,22 @@ static int pe_on_spell(void *ctx, void *user) {
     if (spell->spell == 3u) { vanilla_cost = 100; cost = s_cost_detox; }
     if (spell->spell == 7u) { vanilla_cost = 50; cost = s_cost_scan; }
     if (vanilla_cost && cost != vanilla_cost) {        /* refund the difference before the game charges */
-        int32_t delta = (int32_t)(vanilla_cost - cost) * 0x10000;
-        if (core->attributes && (core->attributes->effectFlags & 0x200u)) delta = delta * 2 / 3;
-        core->exp_or_acc += delta;
+        int32_t original = vanilla_cost * 0x10000, desired = cost * 0x10000;
+        if (core->attributes && (core->attributes->effectFlags & 0x200u)) {
+            original = original * 2 / 3;
+            desired = desired * 2 / 3;
+        }
+        core->exp_or_acc = (s32)((u32)core->exp_or_acc + (u32)(original - desired));
     }
+    return 0;
+}
+
+static int pe_power_cost(void *ctx, void *user) {
+    PeHookPowerCost *query = ctx;
+    (void)user;
+    /* Vanilla leaves the game's value (and other mods' changes) untouched. */
+    if (query->power == 3 && s_cost_detox != 100) *query->cost = s_cost_detox;
+    if (query->power == 7 && s_cost_scan != 50) *query->cost = s_cost_scan;
     return 0;
 }
 
@@ -155,8 +168,11 @@ void pe_pe_balance_register(const char *mod_id) {
             "Half bar costs less ATB; shooting powers still cost a full bar.",
             &s_quick[s_powers[i].index], s_quick_names, 2);
     pe_sync_quick();
+    /* Restore the selected preset after all saved individual rows have loaded. */
+    pe_apply(s_rules);
     s_rules = pe_matches(RULES_REBALANCED) ? RULES_REBALANCED : pe_matches(RULES_VANILLA) ? RULES_VANILLA : RULES_CUSTOM;
     s_rules_shown = s_rules;
     pe_menu_register_tick(pe_balance_tick);
+    pe_hook_add(PE_HOOK_POWER_COST, pe_power_cost, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_SPELL, pe_on_spell, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

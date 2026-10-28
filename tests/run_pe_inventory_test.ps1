@@ -11,7 +11,7 @@ $compileArgs = @('-D__psyz', '-DPE_MODS=1', '-std=c11', '-O1', '-fno-strict-alia
 foreach ($path in @('include', 'mods/host', 'mods/pe_qol', 'third_party/psyz/psyz/include', 'third_party/psyz/external/SDL/include')) {
     $compileArgs += '-I'; $compileArgs += Join-Path $root $path
 }
-foreach ($path in @('tests/pe_mod_inventory_test.c', 'mods/pe_qol/pe_key_items.c', 'mods/pe_qol/pe_bag_sort.c', 'src/main/item/armor_capacity.c')) {
+foreach ($path in @('tests/pe_mod_inventory_test.c', 'mods/pe_qol/pe_key_items.c', 'mods/pe_qol/pe_bag_sort.c', 'mods/host/pe_save.c', 'src/main/item/armor_capacity.c')) {
     $compileArgs += Join-Path $root $path
 }
 $compileArgs += '-o'; $compileArgs += $output

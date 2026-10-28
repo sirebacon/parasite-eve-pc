@@ -4,6 +4,7 @@
 #include "pe_inventory.h"
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
+#include "pe_save.h"
 #include "pe_inventory_service.h"
 #include "pe1/inventory_sort.h"
 #include "pe1/inventory_state.h"
@@ -62,11 +63,19 @@ void pe_log(const char *tag,const char *fmt,...) { (void)tag;(void)fmt; }
 int pe_hook_add(int id,PeHookFn fn,void *u,int p,const char *m) {
     (void)u;(void)p;(void)m;hooks[hook_count].id=id;hooks[hook_count++].fn=fn;return 0;
 }
+/* As the host: records go back before the mods' load handlers and into the save after theirs. */
 int pe_hook_dispatch(int id,void *ctx) {
     int handled=0;
+    if(id==PE_HOOK_SAVE_READ) pe_save_on_read(ctx);
+    if(id==PE_HOOK_NEW_GAME) pe_save_new_game();
     for(int i=0;i<hook_count;++i) if(hooks[i].id==id) handled|=hooks[i].fn(ctx,NULL);
+    if(id==PE_HOOK_SAVE_WRITE) pe_save_on_write(ctx);
     return handled;
 }
+const char *pe_mod_current(void) { return "pe_qol"; }
+int pe_mod_active(const char *m) { (void)m;return 1; }
+void pe_mod_log(const char *m,const char *fmt,...) { (void)m;(void)fmt; }
+void pe_toast(const char *t) { (void)t; }
 int pe_service_publish(const char *name,int version,const void *api,const char *mod) {
     (void)mod;assert(!strcmp(name,"keys")&&version==1);keys=api;return 0;
 }
@@ -86,13 +95,26 @@ int pe_menu_register_live_choice(const char *p,const char *l,const char *d,const
     (void)p;(void)l;(void)d;(void)names;assert(count==2);get_sort=get;set_sort=set;return 0;
 }
 static void reset(void) {
-    PeHookInvCommand c={1117,0,0};pe_hook_dispatch(PE_HOOK_INV_COMMAND,&c);
+    PeHookNewGame c={PE_NEW_GAME_TITLE};pe_hook_dispatch(PE_HOOK_NEW_GAME,&c);
     memset(&g_SaveRuntimeState,0,sizeof g_SaveRuntimeState);
     g_AyaSaveState.equipped_weapon_slot=0;g_AyaSaveState.equipped_armor_slot=-1;
     g_GameStateFlags=0;g_GameStateFlagsWord=0;loaded=1;*pocket_enabled=1;
     g_InvItemPtr=g_AyaInventoryItems;g_InvSlotLimit=10;g_InvActiveListOverride=NULL;
     g_InvSortRankTable=g_InvSortRankTableA;g_InvSortTypeRankTable=g_InvTypeRankTableA;
     g_InvWeaponSortStatIndex=g_InvAmmoSortStatIndex=0;
+}
+/* A record's bytes in a saved tail (pe_save.h layout), NULL if it isn't there. */
+static const unsigned char *record(const unsigned char *card,const char *name,unsigned *size) {
+    unsigned id=0x811C9DC5u;
+    for(const char *c=name;*c;++c) id=(id^(unsigned char)*c)*0x01000193u;
+    const unsigned char *t=card+0x1C90;
+    if(memcmp(t,"PEMC",4)) return NULL;
+    for(unsigned at=20,total=t[6]|t[7]<<8;at<total;) {   /* records short of the window */
+        unsigned rid=pe_inventory_word(t+at),n=t[at+6]|t[at+7]<<8;
+        if(rid==id){*size=n;return t+at+12;}
+        at+=12+n;
+    }
+    return NULL;
 }
 static unsigned checksum(const unsigned char *p,unsigned n,unsigned seed) {
     for(unsigned i=0;i<n;++i)seed=seed*33+p[i];return seed;
@@ -102,8 +124,8 @@ static void old_block(unsigned char *card,unsigned at,const void *data,unsigned 
     memcpy(card+at,header,16);memcpy(card+at+16,data,size);
 }
 int main(void) {
-    unsigned char card[8192],bad[8192];s16 full[50];
-    pe_key_items_register("pe_qol");pe_bag_sort_register("pe_qol");reset();
+    unsigned char card[8192],bad[8192];s16 full[50];const unsigned char *saved;unsigned size=0;
+    pe_save_install();pe_key_items_register("pe_qol");pe_bag_sort_register("pe_qol");reset();
     assert(!get_sort());
     for(int i=1;i<256;++i){s_base[i].itemId=i;s_base[i].kind=10;}
     g_AyaInventoryItems[1]=0xC8;g_AyaInventoryItems[2]=0x38;g_AyaInventoryItems[3]=0xDD;
@@ -124,8 +146,9 @@ int main(void) {
     key=0xC8;result=0;assert(pe_hook_dispatch(PE_HOOK_ITEM_COUNT,args)&&result==1); /* disabled but still full */
     g_AyaInventoryItems[0]=0;ticks[0]();assert(g_AyaInventoryItems[0]==0xC8);
     memset(card,0xA5,sizeof card);pe_hook_dispatch(PE_HOOK_SAVE_WRITE,card);
-    assert(pe_inventory_word(card+0x1E90)==0x59454B50u&&pe_inventory_word(card+0x1E98)==68);
-    assert(card[0x1E8F]==0xA5&&card[0x1EE4]==0xA5&&card[0x1F18]==0xA5);
+    assert((saved=record(card,"pe_qol.keys",&size))&&size==68);
+    assert(pe_inventory_word(card+0x1E90)==0x59454B50u&&!memcmp(card+0x1EA0,saved,68)); /* and the old PKEY block, for older builds */
+    assert(card[0x1C8F]==0xA5); /* nothing before the tail is touched */
     reset();pe_hook_dispatch(PE_HOOK_SAVE_READ,card);assert(keys->take(0xCA));
     /* A recomp PKEY v1 block can be loaded byte-for-byte. */
     struct {u16 count,pad,ids[32];} old_keys={1,0,{0xD1}};
@@ -141,8 +164,8 @@ int main(void) {
     assert(key_count()==28);
     assert(keys->take(0xC8) && key_count()==28); /* duplicate ownership cannot grow */
     memset(card,0,sizeof card);pe_hook_dispatch(PE_HOOK_SAVE_WRITE,card);
-    assert(card[0x1EA0]==28);
-    old_keys.ids[0]=0xDD;old_block(card,0x1E90,&old_keys,sizeof old_keys,0x59454B50u,0x6B657973u);
+    assert((saved=record(card,"pe_qol.keys",&size))&&saved[0]==28);
+    memset(card,0,sizeof card);old_keys.ids[0]=0xDD;old_block(card,0x1E90,&old_keys,sizeof old_keys,0x59454B50u,0x6B657973u);
     pe_hook_dispatch(PE_HOOK_SAVE_READ,card);assert(key_count()==1); /* empty placeholder after invalid data */
     reset();
     /* Exercise the real native sorter, not an imitation. */
@@ -166,15 +189,16 @@ int main(void) {
     ticks[1]();assert(!get_sort());
     g_GameStateFlags=0;assert(set_sort(1));ticks[1]();assert(get_sort());
     memset(card,0,sizeof card);pe_hook_dispatch(PE_HOOK_SAVE_WRITE,card);
-    assert(pe_inventory_word(card+0x1EF0)==0x54524F53u&&pe_inventory_word(card+0x1EF8)==24);
-    assert(pe_inventory_word(card+0x1F04)==0x800923F8u); /* original table ID, never a host pointer */
+    assert((saved=record(card,"pe_qol.sort",&size))&&size==24);
+    assert(pe_inventory_word(card+0x1EF0)==0x54524F53u&&!memcmp(card+0x1F00,saved,24)); /* and the old SORT block */
+    assert(pe_inventory_word(saved+4)==0x800923F8u); /* original table ID, never a host pointer */
     struct {uint32_t mode,rank,type,weapon,armor,hidden;} old_sort={1,0x80092428u,0x80092468u,2,1,0};
-    old_block(card,0x1EF0,&old_sort,sizeof old_sort,0x54524F53u,0x736F7274u);
+    memset(card,0,sizeof card);old_block(card,0x1EF0,&old_sort,sizeof old_sort,0x54524F53u,0x736F7274u);
     pe_hook_dispatch(PE_HOOK_SAVE_READ,card);assert(get_sort());ticks[1]();
     assert(g_InvSortRankTable==g_InvSortRankTableC&&g_InvSortTypeRankTable==g_InvTypeRankTableB);
     assert(g_InvWeaponSortStatIndex==2&&g_InvAmmoSortStatIndex==1);
     assert(g_WayneStorageItems[0]==99);
-    old_sort.rank=0x12345678;old_block(card,0x1EF0,&old_sort,sizeof old_sort,0x54524F53u,0x736F7274u);
+    memset(card,0,sizeof card);old_sort.rank=0x12345678;old_block(card,0x1EF0,&old_sort,sizeof old_sort,0x54524F53u,0x736F7274u);
     pe_hook_dispatch(PE_HOOK_SAVE_READ,card);assert(!get_sort());
     reset();key=0xD1;assert(!pe_hook_dispatch(PE_HOOK_ITEM_COUNT,args));
     puts("Passed native inventory tests: pocket/full-bag story counts and consumption, disabled-pocket draining, pickup/reward handling, recomp-compatible saves, checksum/ID validation, real native auto-sort, equipped items, manual override, and battle/script guards.");

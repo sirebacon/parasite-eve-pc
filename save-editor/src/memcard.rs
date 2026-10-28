@@ -220,6 +220,7 @@ impl MemoryCardContainer {
 
     /// Saves all modified slots back to the current container on disk (`bu00` directory, `.srm`, `.mcr`, `.gme`, `.mcs`, or raw file).
     pub fn save(&mut self) -> Result<()> {
+        self.validate_slots()?;
         match self.kind {
             ContainerKind::PsyzDirectory => {
                 fs::create_dir_all(&self.path)?;
@@ -314,6 +315,7 @@ impl MemoryCardContainer {
     /// Also writes a 19-char fallback copy (`BASLUS-006620000000`) for Slot A if requested,
     /// though standard 20-char `BASLUS-00662000000<0|1><A..O>` files are always written.
     pub fn export_to_psyz_dir(&mut self, target_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+        self.validate_slots()?;
         let target_dir = target_dir.as_ref();
         fs::create_dir_all(target_dir).with_context(|| {
             format!(
@@ -339,6 +341,7 @@ impl MemoryCardContainer {
 
     /// Exports all active slots into a standard 128 KB PS1 Memory Card image (`.srm` / `.mcr` / `.mcd`).
     pub fn export_to_ps1_card_image(&mut self, target_file: impl AsRef<Path>) -> Result<()> {
+        self.validate_slots()?;
         let target_file = target_file.as_ref();
         let mut card = create_blank_ps1_card();
         for i in 0..MAX_CARD_SLOTS {
@@ -358,6 +361,15 @@ impl MemoryCardContainer {
         }
         fs::write(target_file, &card)
             .with_context(|| format!("Failed to write PS1 card image {}", target_file.display()))
+    }
+
+    fn validate_slots(&self) -> Result<()> {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Some(slot) = slot {
+                slot.validate_inventory().with_context(|| format!("Save slot {}", i + 1))?;
+            }
+        }
+        Ok(())
     }
 
     pub fn active_slot_indices(&self) -> Vec<usize> {

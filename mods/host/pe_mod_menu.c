@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <SDL3/SDL.h>
 
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
@@ -58,8 +59,8 @@ static int pe_row_saved(const PeMenuRow *row) {
 }
 
 void pe_menu_save_settings(void) {
-    char path[1100], key[192];
-    FILE *f;
+    char path[1100], key[192], temporary[1180];
+    SDL_IOStream *f;
     int i;
     for (i = 0; i < s_row_count; i++) {
         PeSaved *saved;
@@ -72,13 +73,33 @@ void pe_menu_save_settings(void) {
         }
         if (saved) saved->value = *s_rows[i].value;
     }
-    if (pe_mod_path(path, sizeof(path), "pe_mods.ini") != 0 || !(f = fopen(path, "w"))) {
-        pe_mod_log(NULL, "cannot write pe_mods.ini");
+    if (pe_mod_path(path, sizeof(path), "pe_mods.ini") != 0) {
+        pe_mod_log(NULL, "cannot resolve pe_mods.ini");
         return;
     }
-    fprintf(f, "# Mods panel settings (page/label=value)\n");
-    for (i = 0; i < s_saved_count; i++) fprintf(f, "%s=%d\n", s_saved[i].key, s_saved[i].value);
-    fclose(f);
+    snprintf(temporary, sizeof(temporary), "%s.%llu.tmp", path,
+             (unsigned long long)SDL_GetTicksNS());
+    f = SDL_IOFromFile(temporary, "wbx");
+    if (!f) {
+        pe_mod_log(NULL, "cannot stage pe_mods.ini: %s", SDL_GetError());
+        pe_toast("Could not save mod settings. Changes apply for this session.");
+        return;
+    }
+    const char *header = "# Mods panel settings (page/label=value)\n";
+    int ok = SDL_WriteIO(f, header, strlen(header)) == strlen(header);
+    for (i = 0; ok && i < s_saved_count; i++) {
+        char line[256];
+        int length = snprintf(line, sizeof(line), "%s=%d\n", s_saved[i].key, s_saved[i].value);
+        ok = length > 0 && length < sizeof(line) && SDL_WriteIO(f, line, length) == length;
+    }
+    if (ok && !SDL_FlushIO(f)) ok = 0;
+    if (!SDL_CloseIO(f)) ok = 0;
+    if (!ok || !SDL_RenamePath(temporary, path)) {
+        pe_mod_log(NULL, "cannot save pe_mods.ini: %s", SDL_GetError());
+        SDL_RemovePath(temporary);
+        pe_toast("Could not save mod settings. Changes apply for this session.");
+    }
+
 }
 
 /* ---- registration ---- */
@@ -254,7 +275,11 @@ static int pe_menu_tick(void *ctx, void *user) {
     (void)ctx;
     (void)user;
     for (i = 0; i < s_tick_count; i++)
-        if (pe_mod_active(s_tick_mod[i])) s_ticks[i]();
+        if (pe_mod_active(s_tick_mod[i])) {
+            pe_mod_call_begin(s_tick_mod[i], "per-frame tick", NULL);
+            s_ticks[i]();
+            pe_mod_call_end();
+        }
     return 0;
 }
 
@@ -290,6 +315,7 @@ void pe_menu_row_value_text(PeMenuRow *row, char *out, unsigned size) {
         snprintf(out, size, "Off");
         return;
     }
+    pe_mod_call_begin(row->mod_id, "F1 row", row->label);
     switch (row->kind) {
     case PE_ROW_TOGGLE:
         snprintf(out, size, "%s", *row->value ? "On" : "Off");
@@ -317,6 +343,7 @@ void pe_menu_row_value_text(PeMenuRow *row, char *out, unsigned size) {
         row->text_fn(out, size);
         break;
     }
+    pe_mod_call_end();
 }
 
 static int pe_wrap(int v, int count) { return count > 0 ? ((v % count) + count) % count : 0; }
@@ -327,6 +354,7 @@ void pe_menu_row_step(PeMenuRow *row, int direction) {
     unsigned count;
     /* An inactive mod's settings can be set up (saved); what writes the game can't run. */
     if (!pe_menu_row_active(row) && (row->kind == PE_ROW_LIVE_INT || row->kind == PE_ROW_LIVE_CHOICE)) return;
+    pe_mod_call_begin(row->mod_id, "F1 row", row->label);
     switch (row->kind) {
     case PE_ROW_TOGGLE:
         *row->value = !*row->value;
@@ -351,6 +379,7 @@ void pe_menu_row_step(PeMenuRow *row, int direction) {
     case PE_ROW_INFO:
         break;
     }
+    pe_mod_call_end();
 }
 
 /* Enter: run an action, flip a toggle, cycle a choice. Numbers change with left/right only. */
@@ -362,7 +391,9 @@ void pe_menu_row_accept(PeMenuRow *row) {
             break;
         }
         pe_mod_log(NULL, "action %s/%s", row->page, row->label);
+        pe_mod_call_begin(row->mod_id, "F1 row", row->label);
         row->action();
+        pe_mod_call_end();
         break;
     case PE_ROW_TOGGLE:
     case PE_ROW_CHOICE:

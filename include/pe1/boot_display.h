@@ -115,6 +115,7 @@ void Spu_SetVoiceVolume(s32 value);
 int BootDisplay_IssuePlaybackRead(int command, int parameter);
 int BootDisplay_SetCdFilter(int code);
 s32 BootDisplay_WaitForCdAndRestoreCallbacks(void);
+int BootDisplay_DetachPlayback(void); /* internal cleanup; caller holds audio lock */
 s32 BootDisplay_StartPlayback(void);
 void BootDisplay_CheckPlaybackTime(void);
 struct PsyzCdRead;

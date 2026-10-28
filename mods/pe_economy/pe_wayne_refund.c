@@ -9,7 +9,7 @@
 #include "pe_pages.h"
 #include "pe1/game_timers.h"
 
-enum { PE_CRAFT_COST = 300, PE_NEW_GAME = 1117 };
+enum { PE_CRAFT_COST = 300 };
 static int s_enabled; /* Off by default: Super/Duper Junk provide the partial refund. */
 static int s_valid, s_armed;
 static unsigned s_prev_counter, s_junk_before;
@@ -28,12 +28,6 @@ static int pe_refund_reset(void *ctx, void *user) {
     (void)ctx;
     (void)user;
     s_valid = s_armed = 0;
-    return 0;
-}
-
-static int pe_refund_command(void *ctx, void *user) {
-    const PeHookInvCommand *command = (const PeHookInvCommand *)ctx;
-    if (command->command == PE_NEW_GAME) pe_refund_reset(NULL, user);
     return 0;
 }
 
@@ -66,5 +60,5 @@ void pe_wayne_refund_register(const char *mod_id) {
         "Failed craft refunds 300 Junk when Junk economy is off.", &s_enabled, pe_refund_tick);
     pe_hook_add(PE_HOOK_SCENE_START, pe_refund_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_SAVE_READ, pe_refund_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_INV_COMMAND, pe_refund_command, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_NEW_GAME, pe_refund_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

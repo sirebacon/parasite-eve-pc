@@ -76,6 +76,196 @@ static int original_slot_compatibility(void)
     return 1;
 }
 
+/* Drive the real asynchronous manager in private directories on both ports. */
+static int original_atomic_card_write(unsigned port, const char *host) {
+    MemCardPortState saved = g_MemCardPortStates[port];
+    MemCardPortState *active = g_MemCardActiveState;
+    int loaded = g_MemCardLoadSucceeded, style = g_SaveTitleStyleFlag;
+    int queued = g_AkaoMessageQueueCount, pending = g_McOpPending;
+    size_t bytes = 0;
+    u8 *old = SDL_LoadFile(host, &bytes);
+    if (!old || bytes != 0x2000) { SDL_free(old); return 0; }
+    u8 replacement[0x2000];
+    for (unsigned i = 0; i < sizeof(replacement); ++i) replacement[i] = old[i] ^ 0x5A;
+    int valid = 1;
+    for (unsigned fault = 0; fault < 6 && valid; ++fault) {
+        MemCardPortState *state = &g_MemCardPortStates[port];
+        memset(state, 0, sizeof(*state));
+        state->present = 1; state->selectedSlot = fault >= 4 ? 13 : 14;
+        state->slots[14].state = MEMCARD_SLOT_OCCUPIED;
+        state->slots[14].titleStyleFlag = port;
+        state->fileDescriptor = -1; state->managerState = fault >= 4 ? 4 : 11;
+        state->transferSize = 0x2000; state->retryCount = 30;
+        g_SaveTitleStyleFlag = fault == 1 || fault == 3 ? !port : port;
+        g_MemCardLoadSucceeded = 0; g_MemCardActiveState = state;
+        memcpy(g_MemCardFileBuffer, replacement, sizeof(replacement));
+        MenuWidget_InitPool(); g_MenuDeferredCallback = NULL;
+        char blocked[4096] = "", logical[32];
+        if (fault == 1) {
+            snprintf(logical, sizeof(logical), g_MemCardFilenameFormatPtr, port, '0' + !port, 'O');
+            Psyz_AdjustPath(blocked, logical, sizeof(blocked));
+            if (!SDL_CreateDirectory(blocked)) { valid = 0; break; }
+        }
+        MemCard_UpdateSaveState(port); /* remember old name */
+        MemCard_UpdateSaveState(port); /* create private staging file */
+        MemCard_UpdateSaveState(port); /* queue original 1 KiB writes */
+        MemCard_UpdateSaveState(port); /* first partial write */
+        u8 *check = SDL_LoadFile(host, &bytes);
+        if (state->managerState != 9 || !check || bytes != 0x2000 || memcmp(check, old, bytes)) valid = 0;
+        SDL_free(check);
+        if (!fault || fault == 4) {
+            state->present = 0; MemCard_UpdateSaveState(port); /* interrupted */
+        } else {
+            for (unsigned i = 0; i < 8 && state->managerState == 9; ++i) MemCard_UpdateSaveState(port);
+            if ((fault == 1 && state->managerState == 3) ||
+                (fault != 1 && state->managerState != 3)) valid = 0;
+        }
+        const char *published = host;
+        char changed[4096], created[4096] = "";
+        if (fault >= 4) {
+            snprintf(logical, sizeof(logical), g_MemCardFilenameFormatPtr, port, '0' + port, 'N');
+            Psyz_AdjustPath(created, logical, sizeof(created));
+            SDL_PathInfo info;
+            if (fault == 4 && SDL_GetPathInfo(created, &info)) valid = 0;
+            if (fault == 5) published = created;
+        }
+        if (fault == 3) {
+            Psyz_AdjustPath(changed, g_MemCardFilePath, sizeof(changed)); published = changed;
+            SDL_PathInfo info; if (SDL_GetPathInfo(host, &info)) valid = 0;
+        }
+        check = SDL_LoadFile(published, &bytes);
+        if (!check || bytes != 0x2000 || memcmp(check, fault < 2 || fault == 4 ? old : replacement, bytes)) valid = 0;
+        SDL_free(check);
+        if (fault == 5 && !SDL_RemovePath(created)) valid = 0;
+        if (*blocked && !SDL_RemovePath(blocked)) valid = 0;
+        if (fault == 3 && !SDL_RenamePath(changed, host)) valid = 0;
+        if (!SDL_SaveFile(host, old, 0x2000)) valid = 0;
+        MenuWidget_InitPool(); g_MenuDeferredCallback = NULL;
+    }
+    /* A staging file left by a killed process must not consume a PS1 card
+     * block or become a selectable save on the next directory scan. */
+    char orphan[4096];
+    const char *slash = strrchr(host, '/');
+    snprintf(orphan, sizeof(orphan), "%.*s.pe-save-leftover.tmp", (int)(slash + 1 - host), host);
+    if (!SDL_SaveFile(orphan, old, 0x2000)) valid = 0;
+    int context = g_MemCardReadContext;
+    g_MemCardReadContext = 0;
+    g_MemCardPortStates[port].managerState = 2; g_MemCardPortStates[port].present = 1;
+    MemCard_UpdateSaveState(port);
+    if (g_MemCardPortStates[port].sequence != 1) valid = 0;
+    g_MemCardReadContext = context;
+    if (!SDL_RemovePath(orphan)) valid = 0;
+    SDL_free(old);
+    g_MemCardPortStates[port] = saved; g_MemCardActiveState = active;
+    g_MemCardLoadSucceeded = loaded; g_SaveTitleStyleFlag = style;
+    g_AkaoMessageQueueCount = queued; g_McOpPending = pending;
+    if (valid) printf("Atomic card port %u: partial abort, failed rename, overwrite, clear-data filename switch, first save and orphan staging scan passed\n", port);
+    return valid;
+}
+
+static int original_card_file_services(const u8 *image);
+
+static int native_save_hook_safety(void);
+
+static int native_save_safety(void) {
+    /* Minimal synthetic text data lets the real save-manager dialogs run
+     * without shipping or requiring any retail assets in desktop CI. */
+    ResidentDataPack saved = g_ResidentDataPack;
+    memset(&g_ResidentDataPack, 0, sizeof(g_ResidentDataPack));
+    g_ResidentDataPack.directory.text = 0x30;
+    TextTableDirectory *directory = (TextTableDirectory *)(g_ResidentDataPack.bytes + 0x30);
+    directory->header.tableOffsets[0] = 0x20;
+    TextOffsetTable *table = (TextOffsetTable *)(directory->bytes + 0x20);
+    table->header.count = 128;
+    for (unsigned i = 0; i < 128; ++i) table->header.offsets[i] = 0x102;
+    table->bytes[0x102] = 0xFF;
+    u8 image[0x2000];
+    for (unsigned i = 0; i < sizeof(image); ++i) image[i] = (u8)(i * 37);
+    int valid = original_card_file_services(image);
+    SaveRuntimeState candidate = {0};
+    candidate.player.aya.inventory_slot_count = 50;
+    candidate.player.aya.equipped_weapon_slot = 49;
+    candidate.player.aya.equipped_armor_slot = 48;
+    candidate.player.aya.inventory_items[49] = 0x100;
+    candidate.player.aya.inventory_items[48] = 0x101;
+    candidate.player.runtime.inventory.equipment[0] = (ItemDataRecord){
+        .iconId=1,.itemId=0x78,.kind=1,.tailCount=10,.tailCapacity=10,.bonusStats={999,999,999}};
+    candidate.player.runtime.inventory.equipment[1] = (ItemDataRecord){
+        .iconId=2,.itemId=0xB7,.kind=9,.tailCount=10,.tailCapacity=10};
+    if (!Inv_ValidateSavedInventory(&candidate)) valid = 0;
+    SaveRuntimeState clean = candidate;
+    for (unsigned fault = 0; fault < 13; ++fault) {
+        candidate = clean;
+        switch (fault) {
+        case 0: candidate.player.runtime.inventory.equipment[0].kind = 255; break;
+        case 1: candidate.player.runtime.inventory.equipment[0].tailCount = 11; break;
+        case 2: candidate.player.runtime.inventory.equipment[1].tailCapacity = 255; break;
+        case 3: candidate.player.aya.equipped_weapon_slot = -128; break;
+        case 4: candidate.player.aya.equipped_armor_slot = 50; break;
+        case 5: candidate.player.aya.inventory_slot_count = 51; break;
+        case 6: candidate.player.runtime.inventory.storage[99] = 0x180; break;
+        case 7: candidate.player.runtime.inventory.specialStorage[81] = 0x209; break;
+        case 8: candidate.player.aya.inventory_items[0] = 0x100; break;
+        case 9: candidate.player.runtime.inventory.storage[99] = 0x100; break;
+        case 10: candidate.player.runtime.inventory.specialStorage[81] = 0x101; break;
+        case 11: candidate.player.runtime.inventory.equipment[0].itemId = 0; break;
+        case 12: candidate.player.runtime.inventory.equipment[0].iconId = 0; break;
+        }
+        if (Inv_ValidateSavedInventory(&candidate)) valid = 0;
+    }
+    /* Exercise every UI sorting mode from a cold start, then switch modes
+     * repeatedly. Preserve the item multiset, equipped identities and all
+     * equipment bytes, including the invalid kind from the crash report. */
+    unsigned sort_cases = 0;
+    const unsigned kinds[] = {1, 24, 31, 32, 255};
+    for (unsigned fault = 0; fault < sizeof(kinds) / sizeof(kinds[0]); ++fault) {
+        for (int mode = 0; mode < 3; ++mode) for (int key = 0; key < 3; ++key) {
+            g_SaveRuntimeState = clean;
+            g_InventoryRuntime.equipment[0].kind = kinds[fault];
+            if (fault) {
+                g_AyaSaveState.equipped_weapon_slot = -128;
+                g_AyaSaveState.equipped_armor_slot = 127;
+            }
+            g_InvBonusSlotCount = 0;
+            g_InvSortRankTable = NULL;
+            g_InvSortTypeRankTable = NULL;
+            g_InvWeaponSortStatIndex = g_InvAmmoSortStatIndex = 0;
+            ItemDataRecord equipment_before[2];
+            memcpy(equipment_before, g_InventoryRuntime.equipment, sizeof(equipment_before));
+            for (unsigned pass = 0; pass < 3; ++pass) {
+                Inv_SortInventoryByMode(pass == 1 ? (mode + 1) % 3 : mode, key);
+                unsigned weapons = 0, armors = 0;
+                for (unsigned slot = 0; slot < 50; ++slot) {
+                    int id = g_AyaInventoryItems[slot];
+                    if (id == 0x100) ++weapons;
+                    else if (id == 0x101) ++armors;
+                    else if (id != 0) valid = 0;
+                }
+                if (weapons != 1 || armors != 1 ||
+                    memcmp(equipment_before, g_InventoryRuntime.equipment, sizeof(equipment_before))) valid = 0;
+                if (fault) {
+                    if (g_AyaSaveState.equipped_weapon_slot != -1 ||
+                        g_AyaSaveState.equipped_armor_slot != -1) valid = 0;
+                } else {
+                    int weapon = g_AyaSaveState.equipped_weapon_slot;
+                    int armor = g_AyaSaveState.equipped_armor_slot;
+                    if (weapon < 0 || weapon >= 50 || armor < 0 || armor >= 50 ||
+                        g_AyaInventoryItems[weapon] != 0x100 || g_AyaInventoryItems[armor] != 0x101) valid = 0;
+                }
+            }
+            s16 sorted[50];
+            memcpy(sorted, g_AyaInventoryItems, sizeof(sorted));
+            Inv_SortInventoryByMode(mode, key);
+            if (memcmp(sorted, g_AyaInventoryItems, sizeof(sorted))) valid = 0;
+            ++sort_cases;
+        }
+    }
+    printf("Native inventory sort: %u cold-start/mode-switch cases, all modes, invalid kinds, item preservation and idempotence checked\n", sort_cases);
+    if (!native_task_relocation_safety() || !native_save_hook_safety()) valid = 0;
+    g_ResidentDataPack = saved;
+    return valid ? 0 : 1;
+}
+
 static int original_card_file_services(const u8 *image)
 {
     if(!original_slot_compatibility())return 0;
@@ -113,6 +303,9 @@ static int original_card_file_services(const u8 *image)
         if(lseek(fd,0x123,0)!=0x123 || write(fd,(char *)&marker,1)!=1 ||
            lseek(fd,0x123,0)!=0x123 || read(fd,actual,1)!=1 || actual[0]!=marker) valid=0;
         close(fd);
+        Psyz_AdjustPath(host,g_MemCardFilePath,sizeof(host));
+        if (image && !original_atomic_card_write(port, host)) valid = 0;
+        snprintf(g_MemCardFilePath,sizeof(g_MemCardFilePath),g_MemCardFilenameFormatPtr,port,'0'+port,'O');
         char search[8];snprintf(search,sizeof(search),"bu%u0:*",port);
         MemCardDirEntry entry;
         memset(&entry,0xA5,sizeof(entry));

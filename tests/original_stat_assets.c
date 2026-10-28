@@ -547,6 +547,29 @@ static int inventory_sort_comparisons(void)
         for(int i=0;i<g_InvTransferItemCount;++i)
             CHECK(g_InvTransferItemList[i]>=0 && g_InvTransferItemList[i]<g_AyaSaveState.inventory_slot_count);
     }
+    /* Invalid serialized fields must not escape through sort-table indexes
+     * or shifts. Keep the IDs intact; load validation rejects these saves. */
+    for (unsigned kind = 24; kind <= 255; kind += kind == 24 ? 7 : kind == 31 ? 1 : 223) {
+        memset(&g_SaveRuntimeState, 0, sizeof(g_SaveRuntimeState));
+        g_AyaSaveState.inventory_slot_count = 10;
+        g_AyaSaveState.equipped_weapon_slot = -128;
+        g_AyaSaveState.equipped_armor_slot = 127;
+        g_AyaInventoryItems[0] = 0x100; g_AyaInventoryItems[1] = 0x101;
+        g_InventoryRuntime.equipment[0] = (ItemDataRecord){.iconId=1,.itemId=0x78,.kind=kind};
+        g_InventoryRuntime.equipment[1] = (ItemDataRecord){.iconId=1,.itemId=0x44,.kind=1};
+        CHECK(!Inv_ValidateSavedInventory(&g_SaveRuntimeState));
+        Inv_SortInventoryByMode(1, 0);
+        CHECK(g_AyaSaveState.equipped_weapon_slot == -1 && g_AyaSaveState.equipped_armor_slot == -1);
+        unsigned seen[2] = {0};
+        for (unsigned slot = 0; slot < 10; ++slot) {
+            int id = g_AyaInventoryItems[slot];
+            if (id == 0x100) ++seen[0]; else if (id == 0x101) ++seen[1]; else CHECK(!id);
+        }
+        CHECK(seen[0] == 1 && seen[1] == 1);
+        s16 missing = 0x180, existing = 0x101;
+        CHECK(Inv_CompareItemsByStatForSort(&missing, &existing) == 1);
+        if (kind == 255) break;
+    }
     g_SaveRuntimeState=before;g_InvBonusSlotCount=old_bonus;
     Inv_SetActiveListOverride(NULL,0);Inv_SelectActiveList(0);
     puts("Original inventory sorting: 64,800 USA MIPS comparisons, empty records and full inventory/storage sorting passed");
@@ -658,6 +681,76 @@ static int battle_defaults(PeDisc *disc, PeDiscFile *exe)
         CHECK(g_BattleEquipStateBlock.parameterWord.raw==0 && g_BattleEquipStateBlock.effectFlags==0);
     }
     puts("Original battle defaults: native reset matches USA executable fields and tail");
+    return 0;
+}
+/* Optional fixture emitted by the save editor's Rust regression test. This
+ * checks the standalone editor against original disc data and game code. */
+static int editor_equipment_and_capacity(void)
+{
+    const char *path=getenv("PE_TEST_EDITOR_DATA");
+    if(!path || !*path) return 0;
+    FILE *file=fopen(path,"rb"); CHECK(file);
+    for(unsigned id=0x3F;id<=0xC7;++id) {
+        ItemDataRecord item;
+        CHECK(fread(&item,1,sizeof(item),file)==sizeof(item));
+        ItemDataRecord expected=*Item_LookupBaseData(id-1);
+        if(expected.tailCapacity>10) expected.tailCapacity=10; /* unused Debug SMG */
+        CHECK(!memcmp(&item,&expected,sizeof(item)));
+    }
+    BattleEntity player={0}; Combatant core={0};
+    player.core=&core;g_PlayerEntity=(FieldActor *)&player;
+    memset(g_StatScaleBase,0,sizeof(g_StatScaleBase));
+    memset(g_AyaSaveState.stats.levels,0,sizeof(g_AyaSaveState.stats.levels));
+    g_InvItemPtr=g_AyaSaveState.inventory_items;
+    for(unsigned capacity=10;capacity<=46;++capacity) {
+        unsigned char data[4]; CHECK(fread(data,1,4,file)==4);
+        CHECK((data[0] | (unsigned)data[1]<<8)==capacity);
+        g_AyaSaveState.stats.levels[6]=data[2] | (unsigned)data[3]<<8;
+        for(unsigned bonus=0;bonus<=4;++bonus) {
+            g_InvBonusSlotCount=bonus;
+            Inv_RecalcSlotStats();
+            CHECK(g_AyaSaveState.inventory_slot_count==capacity);
+            CHECK(Inv_GetAyaSlotLimit()==(int)(capacity+bonus));
+        }
+    }
+    CHECK(fgetc(file)==EOF);CHECK(fclose(file)==0);
+    g_PlayerEntity=NULL;g_InvItemPtr=NULL;g_InvBonusSlotCount=0;
+    puts("Save editor: all 137 equipment templates match disc; 37 bag capacities survive native recalculation with armor bonuses");
+    return 0;
+}
+static int editor_save_sorting(void)
+{
+    const char *path=getenv("PE_TEST_EDITOR_SAVE");
+    if(!path || !*path) return 0;
+    SaveRuntimeState saved;
+    FILE *file=fopen(path,"rb");CHECK(file);
+    CHECK(fseek(file,0x100,SEEK_SET)==0);
+    CHECK(fread(&saved,1,sizeof(saved),file)==sizeof(saved));CHECK(fclose(file)==0);
+    CHECK(Inv_ValidateSavedInventory(&saved));
+    for(int mode=0;mode<3;++mode)for(int key=0;key<3;++key) {
+        g_SaveRuntimeState=saved;g_InvBonusSlotCount=0;Inv_ResetActiveList();
+        g_InvSortRankTable=NULL;g_InvSortTypeRankTable=NULL;
+        g_InvWeaponSortStatIndex=g_InvAmmoSortStatIndex=0;
+        s16 weapon=g_AyaSaveState.inventory_items[g_AyaSaveState.equipped_weapon_slot];
+        s16 armor=g_AyaSaveState.inventory_items[g_AyaSaveState.equipped_armor_slot];
+        for(unsigned pass=0;pass<3;++pass) {
+            Inv_SortInventoryByMode(pass==1?(mode+1)%3:mode,key);
+            CHECK(!memcmp(g_InventoryRuntime.equipment,saved.player.runtime.inventory.equipment,
+                          sizeof(g_InventoryRuntime.equipment)));
+            CHECK(g_AyaSaveState.inventory_items[g_AyaSaveState.equipped_weapon_slot]==weapon);
+            CHECK(g_AyaSaveState.inventory_items[g_AyaSaveState.equipped_armor_slot]==armor);
+            for(unsigned i=0;i<50;++i) {
+                unsigned before=0,after=0;
+                s16 value=saved.player.aya.inventory_items[i];
+                for(unsigned j=0;j<50;++j) {
+                    before+=saved.player.aya.inventory_items[j]==value;
+                    after+=g_AyaSaveState.inventory_items[j]==value;
+                }
+                CHECK(before==after);
+            }
+        }
+    }
+    puts("Tester save: all nine inventory sort modes/keys and repeated mode switches preserve gear, equipped identities and item multiset");
     return 0;
 }
 static int equipment_init(void)
@@ -1046,6 +1139,8 @@ int main(void)
     CHECK(weapon_stats()==0);
     CHECK(armor_stats()==0);
     CHECK(equipment_init()==0);
+    CHECK(editor_equipment_and_capacity()==0);
+    CHECK(editor_save_sorting()==0);
     CHECK(inventory_selection()==0);
     CHECK(recalc_stats()==0);
     CHECK(original_menu_bootstrap()==0);

@@ -103,7 +103,8 @@ pub struct EditArgs {
     #[arg(long)]
     pub hp: Option<u16>,
 
-    /// Set maximum HP (1..=999)
+    /// Set maximum HP (1..=999). The game sets it from the HP stat, so the stat is raised to
+    /// match (exactly with a disc). The top is 869, or 999 with HP Max Up armor equipped.
     #[arg(long)]
     pub max_hp: Option<u16>,
 
@@ -115,9 +116,14 @@ pub struct EditArgs {
     #[arg(long)]
     pub bp: Option<u32>,
 
-    /// Set Aya's active inventory slot capacity (10..=50)
-    #[arg(long)]
+    /// Set Aya's base bag capacity (10..=46; armor can add up to 4 slots)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(10..=46))]
     pub slots: Option<u8>,
+
+    /// Parasite Eve (USA) disc image (`.cue`, `.bin` or `.iso`) to read item records and the bag
+    /// table from. Defaults to the disc in the game's `parasite-eve.toml`.
+    #[arg(long)]
+    pub disc: Option<PathBuf>,
 
     /// Set story day (1..=6)
     #[arg(long)]
@@ -155,7 +161,21 @@ pub struct EditArgs {
     #[arg(long)]
     pub add_item: Vec<String>,
 
-    /// Cheat: Max Aya stats (Lv 99, 999/999 HP, 99,999 BP, 50 item slots, max stat growth)
+    /// Repair equipment icons/model classes from older editor versions, preserving upgrades
+    #[arg(long)]
+    pub repair_equipment_types: bool,
+
+    /// Sort Aya's bag (weapons, armor, ammo, medicine, other, key items; the equipped gun and
+    /// armor stay equipped)
+    #[arg(long)]
+    pub sort_bag: bool,
+
+    /// Sort Wayne's item shelf and equipment vault
+    #[arg(long)]
+    pub sort_wayne: bool,
+
+    /// Cheat: Max Aya stats (Lv 99, top HP: 869, or 999 with HP Max Up armor; 99,999 BP, 46 item
+    /// slots, max stat growth)
     #[arg(long)]
     pub max_aya: bool,
 
@@ -171,7 +191,8 @@ pub struct EditArgs {
     #[arg(long)]
     pub max_gear: bool,
 
-    /// Cheat: Add an ultimate P90 + Cm Suit 2 + Super Tool Kit + Full Recover loadout
+    /// Cheat: Add and equip an ultimate P90 + Cm Suit 2 (old gear stays in the bag), plus Super
+    /// Tool Kit + Full Recover. The suit's HP Max Up lets --max-aya reach 999 HP
     #[arg(long)]
     pub ultimate_loadout: bool,
 }
@@ -415,10 +436,25 @@ fn parse_u8_hex_or_dec(s: &str) -> Result<u8> {
 }
 
 fn cmd_edit(args: EditArgs) -> Result<()> {
+    let game = match &args.disc {
+        Some(disc) => Some(crate::disc::load_disc(disc)?),
+        None => crate::disc::load_configured_disc(),
+    };
+    match &game {
+        Some(g) => println!("Game data: {}", g.source.display()),
+        None if !args.add_item.is_empty() || args.ultimate_loadout => println!(
+            "Using verified USA equipment templates. Use --disc for exact HP growth calculations."
+        ),
+        None => {}
+    }
+
     let mut container = MemoryCardContainer::open(&args.path)?;
     let idx = resolve_slot_index(&container, args.slot)?;
     let save = container.slots[idx].as_mut().unwrap();
 
+    if args.repair_equipment_types {
+        println!("Repaired {} equipment icon/model classes", save.repair_equipment_types());
+    }
     if args.max_aya {
         save.apply_cheat_max_aya();
     }
@@ -451,7 +487,7 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
         save.bonus_points = bp.min(99_999);
     }
     if let Some(slots) = args.slots {
-        save.inventory_slot_count = slots.clamp(10, 50);
+        save.inventory_slot_count = slots;
     }
     if let Some(day) = args.day {
         save.play_time_class = day.clamp(1, 6);
@@ -487,6 +523,13 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
             "Added item 0x{:02X} to inventory slot #{}",
             item_id, added_slot
         );
+    }
+
+    if args.sort_bag {
+        save.sort_aya_bag();
+    }
+    if args.sort_wayne {
+        save.sort_wayne_storage();
     }
 
     let _ = save.to_bytes();

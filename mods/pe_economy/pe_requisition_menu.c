@@ -22,7 +22,6 @@
 #include "pe_pages.h"
 #include "pe_requisition.h"
 
-#define PE_INV_CMD_START_NEW_GAME 1117
 #define PE_BAG_SLOTS 50
 #define PE_GOODS_ROWS_MAX 19      /* goods plus the four economy effects */
 #define PE_RESCUE_CHECK_FRAMES 60
@@ -148,11 +147,6 @@ static int pe_on_reset(void *ctx, void *user) {
     return 0;
 }
 
-static int pe_on_inv_command(void *ctx, void *user) {
-    if (((const PeHookInvCommand *)ctx)->command == PE_INV_CMD_START_NEW_GAME) pe_on_reset(ctx, user);
-    return 0;
-}
-
 void pe_requisition_menu_register(const char *mod_id) {
     pe_menu_register_info(PE_PAGE_REQUISITION, "Your Junk", "The live Junk balance.", pe_junk_text);
     pe_menu_register_dynamic_choice(PE_PAGE_REQUISITION, "Goods",
@@ -167,5 +161,5 @@ void pe_requisition_menu_register(const char *mod_id) {
     pe_menu_register_tick(pe_tick);
     pe_hook_add(PE_HOOK_SAVE_READ, pe_on_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
     pe_hook_add(PE_HOOK_SCENE_START, pe_on_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
-    pe_hook_add(PE_HOOK_INV_COMMAND, pe_on_inv_command, NULL, PE_PRIORITY_NORMAL, mod_id);
+    pe_hook_add(PE_HOOK_NEW_GAME, pe_on_reset, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

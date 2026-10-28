@@ -1,4 +1,5 @@
 #include "common.h"
+#include "pe_hooks.h"
 #include "pe1/script_state.h"
 #include "pe1/script_queue.h"
 #include "pe1/battle_entity_anim.h"
@@ -320,6 +321,9 @@ int Script_MoveTowardPoint(int **args) {
         g_CurrentEntity->rot_y = target_angle;
     }
 
+    /* Apply entry-speed options before the original distance-to-target clamp,
+     * so a faster step still arrives exactly at the scripted destination. */
+    PE_HOOK(PE_HOOK_ACTOR_STEP, (&(PeHookActorStep){speed_entity, &movement_speed, NULL}));
     g_CurrentEntity->motion_x = Math_FixedMul(-movement_speed, (s32)((u32)rsin(target_angle) << 4));
     movement_z = Math_FixedMul(-movement_speed, (s32)((u32)rcos(target_angle) << 4));
     current_x = (target_x - current_x) >> 16;
@@ -402,6 +406,7 @@ int Render_CameraTrackEntityAngle(int **args) {
 
     target_angle = (u16)(0x1400 - ratan2((s32)((u32)current_z - (u32)target_z), (s32)((u32)current_x - (u32)target_x)));
     target_angle &= 0xFFF;
+    PE_HOOK(PE_HOOK_ACTOR_STEP, (&(PeHookActorStep){tracking_entity, &base_speed, NULL}));
     g_CurrentEntity->motion_x = Math_FixedMul((s32)(0u - (u32)base_speed), (s32)((u32)rsin(target_angle) << 4));
     base_speed = Math_FixedMul((s32)(0u - (u32)base_speed), (s32)((u32)rcos(target_angle) << 4));
 
@@ -675,6 +680,7 @@ int Render_CameraTrackEntityZoom(int **args) {
         g_CurrentEntity->rot_y = target_angle;
     }
 
+    PE_HOOK(PE_HOOK_ACTOR_STEP, (&(PeHookActorStep){speed_entity, &movement_speed, NULL}));
     g_CurrentEntity->motion_x = Math_FixedMul(-movement_speed, (s32)((u32)rsin(target_angle) << 4));
     movement_z = Math_FixedMul(-movement_speed, (s32)((u32)rcos(target_angle) << 4));
     current_x = (target_x - current_x) >> 16;

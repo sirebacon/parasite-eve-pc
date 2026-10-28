@@ -6,27 +6,32 @@
 static PeDisc *movieAudioImage;
 static PeDiscFile movieAudioFile;
 static int MenuCard_ReadMovieAudio(struct PsyzCdRead *read) {
-    if(!movieAudioImage || !read || read->size!=2352 ||
+    if(!movieAudioImage || movieAudioImage!=g_CdImage || !movieAudioImage->stream || !read || !read->buffer || read->size!=2352 ||
        read->sector<movieAudioFile.sector ||
        read->sector-movieAudioFile.sector>=((u64)movieAudioFile.size+2047)/2048)
         return -1;
     return pe_disc_read_raw(movieAudioImage,&movieAudioFile,
                read->sector-movieAudioFile.sector,read->buffer)?2352:-1;
 }
+/* CD commands raise kernel events. Never hold audio while issuing one:
+ * the IRQ thread holds the kernel while the AKAO timer writes SPU registers. */
 static void MenuCard_StopMovieAudio(void) {
     Psyz_AudioLock();
-    if(movieAudioImage){
-        CdControlB(8,NULL,NULL);
+    int active=movieAudioImage!=NULL;
+    if(active){
         Psyz_CdSetReadCB(NULL);
         movieAudioImage=NULL;
+        memset(&movieAudioFile,0,sizeof(movieAudioFile));
     }
     Psyz_AudioUnlock();
+    if(active)CdControlB(8,NULL,NULL);
 }
 static int MenuCard_StartMovieAudio(PeDisc *image,const PeDiscFile *file) {
     u8 raw[2352],filter[2],mode=200;
-    u32 count=(u32)(((u64)file->size+2047)/2048),sector;
     CdlLOC position;
     MenuCard_StopMovieAudio();
+    if(!image || !image->stream || !file || file->directory || image->sector_size!=2352)return 0;
+    u32 count=(u32)(((u64)file->size+2047)/2048),sector;
     for(sector=0;sector<count;sector++){
         if(!pe_disc_read_raw(image,file,sector,raw))return 0;
         if((raw[18]&0x44)==0x44)break;
@@ -37,11 +42,11 @@ static int MenuCard_StartMovieAudio(PeDisc *image,const PeDiscFile *file) {
     Psyz_AudioLock();
     movieAudioImage=image;movieAudioFile=*file;
     Psyz_CdSetReadCB(MenuCard_ReadMovieAudio);
+    Psyz_AudioUnlock();
     CdIntToPos(file->sector,&position);
     int ok=CdControlB(14,&mode,NULL)>0 && CdControlB(13,filter,NULL)>0 &&
            CdControlB(2,(u8 *)&position,NULL)>0 && CdControlB(27,NULL,NULL)>0;
     if(!ok)MenuCard_StopMovieAudio();
-    Psyz_AudioUnlock();
     return ok;
 }
 

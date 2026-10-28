@@ -4,9 +4,11 @@
 #include "pe1/draw_buffers.h"
 #include "pe1/game_state.h"
 #include "pe1/menu_background.h"
+#include "pe1/menu_widget.h"
 #include "pe1/psyq_gpu.h"
 #include "pe1/render_packets.h"
 #include "pe_hooks.h"
+#include "pe1/textbox.h"
 
 int g_ActiveDrawSlot;
 DISPENV g_RenderDispEnvArray[2];
@@ -20,6 +22,17 @@ static inline DISPENV *DispAddress(int index) {
 
 static inline DRAWENV *DrawAddress(int index) {
     return &g_RenderDrawEnvArray[index];
+}
+
+/* Highest ordering-table entry of the 2D layers widescreen keeps centred:
+ * 2 when a dialogue was drawn this frame (its backdrop links there), 1 while
+ * a menu is open, else 0. */
+static int Draw_WidescreenOverlayEntry(void) {
+    int drawn = g_TextboxDrawnThisFrame;
+
+    g_TextboxDrawnThisFrame = 0;
+    if (drawn) return 2;
+    return g_MenuWidgetCurrentNode != 0;
 }
 
 void Draw_RenderFrame(void) {
@@ -52,6 +65,7 @@ void Draw_RenderFrame(void) {
     if ((status & 0xff) != 0 || (state & 0x200) != 0) {
         idx = g_ActiveDrawSlot;
         PutDrawEnv(DrawAddress(idx));
+        Render_CommitWidescreenPicture(idx, -1);
         g_ActiveDrawSlot = g_ActiveDrawSlot < 1U;
         return;
     }
@@ -62,6 +76,9 @@ draw_buffer:
 
         drawSlot = g_ActiveDrawSlot;
         orderingTable = (RenderNativeTag *)g_GameState.shared_buffers.ordering_tables[drawSlot];
+        Render_LinkFieldSubpixel(drawSlot, orderingTable);
+        Render_CommitWidescreenPicture(drawSlot, g_RenderDrawEnvArray[drawSlot].clip.y);
+        Render_CentreWidescreenOverlay(drawSlot, orderingTable, Draw_WidescreenOverlayEntry());
         DrawOTagEnv(orderingTable + 4095, &g_RenderDrawEnvArray[drawSlot]);
     }
 
