@@ -4,7 +4,7 @@ if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET
    AND (NOT DEFINED CMAKE_SYSTEM_NAME OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
     set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum supported macOS version")
 endif()
-project(parasite-eve-pc VERSION 0.6.0 LANGUAGES C)
+project(parasite-eve-pc VERSION 0.7.0 LANGUAGES C)
 option(PE_MACOS_BUNDLE "Package the macOS application bundle" OFF)
 
 set(CMAKE_C_STANDARD 11)

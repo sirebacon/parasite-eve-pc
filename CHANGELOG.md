@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7
+
+- Fixed crashes when repeated or status-effect shots hit an enemy that has already been defeated.
+- Improved Windows Direct3D 12 stability during demanding rendering, including high resolutions and fast-forward.
+- Made GPU uploads, VRAM readback and device resets safer when an operation fails.
+- Reset mod save data correctly when starting New Game, Tutorial or EX Game, while preserving data when an EX Game command is cancelled.
+- Improved preservation of saved mod data and added optional combat and Parasite Energy rebalance settings, weapon DPS display and half-bar turns. Mods remain off by default.
+
 ## 0.6
 
 - Added optional widescreen in **Escape → Graphics → Aspect ratio**, with centred menus and smoother camera movement. Narrow scenes and movies keep their original framing.

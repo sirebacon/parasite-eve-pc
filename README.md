@@ -29,10 +29,13 @@ If the game crashes, it saves a report and shows where to find it. Attach that f
 
 ## Built-in mods: PE Enhancements
 
-This source tree includes four modular enhancement packs. Build with **`PE_MODS=ON`**
-to include them; a standard build leaves the mod host disabled. Downloaded releases
-may differ from this checkout. Open **F1 → PE Enhancements** to configure the mods.
-Preferences are saved automatically in `pe_mods.ini`.
+This source tree includes the PE Enhancements packs described below. Upstream
+downloads include only the packs already merged there.
+
+Downloads include an optional mod host. When building from source, enable it with
+`-DPE_MODS=ON`; without it, the hooks compile to nothing. In a mod build, **F1** opens
+the Mods panel. Mods start only after **F1 → Manage mods → All mods** is turned on
+and the game restarted. Settings are saved in `pe_mods.ini`.
 
 ### Movement and inventory (`pe_qol`)
 
