@@ -119,6 +119,13 @@ inside the game's CRC, at the same offsets as the psxrecomp build so saves move 
 | +0x200 | `PKEY` key item pocket | pe_qol/pe_key_items.c |
 | +0x260 | `SORT` bag sort | pe_qol/pe_bag_sort.c |
 
+The game builds every save into a cleared buffer, so the host carries the loaded save's tail
+forward (host/pe_save_tail.c, installed always, even with All mods off): it is put back into the
+buffer before the mods' `SAVE_WRITE` handlers run, so a mod that is off, failed to start or isn't in
+the build keeps its block, and blocks of mods nobody here knows survive. New Game clears it. The rule
+for every mod: **always write (or zero) your own block when saving, never skip it**, so a stale copy
+can't outlive a real change. Checks: tests/run_pe_save_tail_test.ps1.
+
 ## Optional encounter and ammo controls
 
 No random battles (Combat) reads the game's own saved switch. Turning it off

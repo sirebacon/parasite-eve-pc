@@ -12,6 +12,7 @@ set(pe_host_sources
     host/pe_game_facts.c    # game facts as tables: effect names and groups, power tags
     host/pe_main_menu.c     # extra rows in Aya's main menu, screens from game widgets
     host/pe_equip_sync.c    # edited equipment reaches the next battle
+    host/pe_save_tail.c     # the save's free tail carried forward (mods off keep their data)
     host/pe_present.c       # image presenter: pictures pasted into the finished frame
     host/pe_disc_assets.c   # read-only game data from the player's disc (rooms)
     host/pe_model.c         # decoded game models: geometry, textures, idle animation

@@ -15,6 +15,7 @@
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
 #include "pe_present.h"
+#include "pe_save_tail.h"
 
 extern const PeMod *const g_pe_mods[]; /* generated: pe_mod_list.c */
 
@@ -303,6 +304,7 @@ static void pe_host_start(const PeHookInit *init) {
         pe_equip_sync_init();
         pe_present_install();
     }
+    pe_save_tail_install();                      /* always: a save made with mods off keeps their data too */
     if (s_interactive) pe_panel_install();
     s_started = 1;
     {                                            /* inactive mods' handlers stay registered, skipped */
