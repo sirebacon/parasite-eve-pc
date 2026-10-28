@@ -16,6 +16,7 @@
 #include "pe_pages.h"
 #include "pe_present.h"
 #include "pe_save.h"
+void pe_debug_control_install(void);   /* pe_debug_control.c */
 
 #define PE_INV_CMD_START_NEW_GAME 1117   /* the EX Game's start (Inv_DispatchCommand) */
 
@@ -333,6 +334,7 @@ static void pe_host_start(const PeHookInit *init) {
         pe_present_install();
     }
     pe_save_install();                           /* always: a save made with mods off keeps their data too */
+    pe_debug_control_install();                  /* only with PE_DEBUG_CONTROL set: test scripts */
     if (s_interactive) pe_panel_install();
     s_started = 1;
     {                                            /* inactive mods' handlers stay registered, skipped */

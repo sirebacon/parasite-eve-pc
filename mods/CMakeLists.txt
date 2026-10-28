@@ -13,6 +13,7 @@ set(pe_host_sources
     host/pe_main_menu.c     # extra rows in Aya's main menu, screens from game widgets
     host/pe_equip_sync.c    # edited equipment reaches the next battle
     host/pe_save.c          # mods' per-save data: records the host saves, loads and carries
+    host/pe_debug_control.c # commands from a test script (PE_DEBUG_CONTROL only)
     host/pe_present.c       # image presenter: pictures pasted into the finished frame
     host/pe_disc_assets.c   # read-only game data from the player's disc (rooms)
     host/pe_model.c         # decoded game models: geometry, textures, idle animation
