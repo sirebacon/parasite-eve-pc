@@ -68,7 +68,9 @@ void *Text_LookupTable4(unsigned int index) {
     }
 
     offset = table->header.offsets[index];
-    return &table->bytes[offset];
+    void *text = &table->bytes[offset];
+    PE_HOOK(PE_HOOK_TEXT_LOOKUP, (&(PeHookTextLookup){4, index, &text}));
+    return text;
 }
 
 void *Text_LookupTable8(unsigned int index) {
@@ -120,7 +122,9 @@ void *Text_LookupTable10(unsigned int index) {
     }
 
     offset = table->header.offsets[index];
-    return &table->bytes[offset];
+    void *text = &table->bytes[offset];
+    PE_HOOK(PE_HOOK_TEXT_LOOKUP, (&(PeHookTextLookup){16, index, &text}));
+    return text;
 }
 
 /* Text-table-3 entry naming the location of map `map`. */
@@ -143,7 +147,9 @@ void *Text_LookupMapLocationText(int map) {
     }
 
     offset = table->header.offsets[index];
-    return &table->bytes[offset];
+    void *text = &table->bytes[offset];
+    PE_HOOK(PE_HOOK_TEXT_LOOKUP, (&(PeHookTextLookup){16, (unsigned)index, &text}));
+    return text;
 }
 
 /* Location name of map `map` (-1 selects name 15); names are NUL-separated. */

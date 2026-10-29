@@ -32,7 +32,8 @@ typedef enum PeHookId {
     PE_HOOK_PAD_MAP,     /* PeHookPadMap: local run-button mapping for this poll */
     PE_HOOK_ACTOR_STEP,  /* PeHookActorStep: local scripted speed or animation increment */
     PE_HOOK_ITEM_USE,    /* int *: Battle_ApplyDamage item id before its effects */
-    PE_HOOK_TEXT_LOOKUP, /* PeHookTextLookup: item name/description lookup result */
+    PE_HOOK_TEXT_LOOKUP, /* PeHookTextLookup: a resident text table lookup's result (system messages,
+                          * item names and descriptions, the rest); may be replaced */
     PE_HOOK_INVENTORY_SORTED, /* NULL: Aya's native bag sort completed */
     PE_HOOK_INVENTORY_HEADER, /* MenuWidgetNode *: after Aya's Quantity header is drawn */
     PE_HOOK_EQUIP_EFFECT, /* PeHookEquipEffect: effect icon draw; nonzero replaces sprite */
@@ -53,6 +54,8 @@ typedef enum PeHookId {
     PE_HOOK_FRAME_DRAWN, /* NULL: Draw_RenderFrame, the previous frame finished drawing (DrawSync)
                           * and not yet shown; its buffer is g_RenderDrawEnvArray[1 - g_ActiveDrawSlot] */
     PE_HOOK_NEW_GAME,    /* PeHookNewGame: a new game starts; the host has reset every save record */
+    PE_HOOK_TEXT_PAGE,   /* PeHookTextPage: a dialogue box found its page in the room's message bank;
+                          * the text it draws may be replaced */
     PE_HOOK_COUNT
 } PeHookId;
 
@@ -84,9 +87,18 @@ typedef struct PeHookScriptRandom {
 } PeHookScriptRandom;
 
 typedef struct PeHookTextLookup {
-    unsigned table, index; /* table 8 = item names, 12 = item descriptions */
+    unsigned table, index; /* table 4 = system messages, 8 = item names, 12 = item descriptions,
+                            * 16 = the rest (Text_LookupTable4 / 8 / C / 10) */
     void **text;
 } PeHookTextLookup;
+
+/* The box's text starts after the page's FE <id> and runs to its FF or F9. A replacement must
+ * end the same way and outlive the box; the bank itself is left as loaded. */
+typedef struct PeHookTextPage {
+    const unsigned char *bank; /* the message bank the box reads (g_TextboxMessageSource) */
+    unsigned page;             /* the page the script opened */
+    unsigned char **message;   /* the text the box will draw */
+} PeHookTextPage;
 
 typedef struct PeHookRewards {
     int exp;

@@ -324,6 +324,8 @@ void Menu_DrawTextboxEntries(void) {
                     }
                     textbox->message++;
                 }
+                PE_HOOK(PE_HOOK_TEXT_PAGE, (&(PeHookTextPage){g_TextboxMessageSource,
+                                                              (unsigned)textbox->page_id, &textbox->message}));
             }
             baseX = 0x14;
             cursor.y = 0xAE;
