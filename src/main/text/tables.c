@@ -261,6 +261,8 @@ TextboxGlyphSpacing g_TextboxGlyphSpacing[78] = {
     {0,7},{0,7},{0,8},{0,9},{0,5},{0,4},{0,8},{0,5},{0,11},{0,9},{0,7},{0,8},{0,8},
     {0,7},{0,6},{0,5},{0,9},{0,9},{0,11},{0,7},{0,9},{0,6},{0,4},{0,4},{0,7},{0,0},
 };
+const TextboxGlyphSpacing *g_TextboxGlyphWidths = g_TextboxGlyphSpacing;
+unsigned g_TextboxGlyphCount = sizeof(g_TextboxGlyphSpacing) / sizeof(*g_TextboxGlyphSpacing);
 
 /* Original USA per-window escape failure and prohibition messages. */
 u8 g_EscapeFailedTexts[34] = {0xfb,0x19,0x68,0xa0,0x82,0x7f,0xfb,0x0b,0xfb,0x11,0x6b,0x74,0xff,0x00,0x00,0x00,0x00,0x15,0x30,0x38,0x3b,0x34,0x33,0x0f,0x43,0x3e,0x0f,0x34,0x42,0x32,0x30,0x3f,0x34,0xff};

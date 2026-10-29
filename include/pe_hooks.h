@@ -56,6 +56,8 @@ typedef enum PeHookId {
     PE_HOOK_NEW_GAME,    /* PeHookNewGame: a new game starts; the host has reset every save record */
     PE_HOOK_TEXT_PAGE,   /* PeHookTextPage: a dialogue box found its page in the room's message bank;
                           * the text it draws may be replaced */
+    PE_HOOK_TIM_UPLOAD,  /* TimFile *: Asset_LoadTimImage, before the image goes to VRAM (fonts,
+                          * backgrounds, area glyph pages); its pixels may be changed in place */
     PE_HOOK_COUNT
 } PeHookId;
 

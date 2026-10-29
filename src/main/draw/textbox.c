@@ -409,14 +409,14 @@ void Menu_DrawTextboxEntries(void) {
                             u16 nameU, nameV;
                             if ((unsigned)nameIndex >= sizeof(g_TextboxNameGlyphs.glyphs)) return;
                             nameGlyph = g_TextboxNameGlyphs.glyphs[(s8)nameIndex];
-                            if (nameGlyph >= sizeof(g_TextboxGlyphSpacing) / sizeof(*g_TextboxGlyphSpacing)) return;
+                            if (nameGlyph >= g_TextboxGlyphCount) return;
 
                             fontRow = nameGlyph / 21;
                             nameU = ((nameGlyph - (fontRow * 0x15)) & 0xFF) * 0xC;
                             nameV = (fontRow & 0xFF) * 0xC;
                             uv.x = nameU;
                             uv.y = nameV;
-                            cursor.x -= g_TextboxGlyphSpacing[nameGlyph].left;
+                            cursor.x -= g_TextboxGlyphWidths[nameGlyph].left;
                             if (nextPacket >= packetLimit) return;
                             SetDrawTPage(nextPacket, 0, 1, font->tpage);
                             SetSprt(&nextPacket->sprite);
@@ -442,7 +442,7 @@ void Menu_DrawTextboxEntries(void) {
                             AddPrim(orderingTable, temp_a1_2);
                             nextNameIndex = nameIndex + 1;
                             nameIndex = nextNameIndex;
-                            cursor.x += g_TextboxGlyphSpacing[nameGlyph].right;
+                            cursor.x += g_TextboxGlyphWidths[nameGlyph].right;
                         } while ((s8)nextNameIndex < g_TextboxNameGlyphs.count);
                     }
                     stream += 1;
@@ -726,8 +726,8 @@ void Menu_DrawTextboxEntries(void) {
 
                     workingValue = (u8)((unsigned int)temp_v0_7 / 21);
                     uv.y = workingValue * 12;
-                    if (*stream >= sizeof(g_TextboxGlyphSpacing) / sizeof(*g_TextboxGlyphSpacing)) return;
-                    cursor.x -= g_TextboxGlyphSpacing[*stream].left;
+                    if (*stream >= g_TextboxGlyphCount) return;
+                    cursor.x -= g_TextboxGlyphWidths[*stream].left;
                     if (nextPacket >= packetLimit) return;
                     SetDrawTPage(nextPacket, 0, 1, font->tpage);
                     SetSprt(&nextPacket->sprite);
@@ -748,7 +748,7 @@ void Menu_DrawTextboxEntries(void) {
                     currentPacket->sprite.clut = font->clut;
 
                     AddPrim(orderingTable, (unsigned int *)(currentPacket++));
-                    temp_v1_11 = g_TextboxGlyphSpacing[*stream].right;
+                    temp_v1_11 = g_TextboxGlyphWidths[*stream].right;
                     stream += 1;
                     var_v0_3 = cursor.x + temp_v1_11;
                     cursor.x = var_v0_3;
