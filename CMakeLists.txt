@@ -866,7 +866,14 @@ foreach(pad_target IN LISTS akao_runtime_targets)
 endforeach()
 if(BUILD_TESTING)
     target_sources(test-original-actor-animation PRIVATE $<TARGET_OBJECTS:parasite-eve-original-pad>)
-    target_sources(test-original-input-rules PRIVATE $<TARGET_OBJECTS:parasite-eve-original-pad>)
+    # Input initialization starts the enabled mods. Randomizer hooks retain scene,
+    # asset and audio code, so use the same providers as the native executable.
+    target_sources(test-original-input-rules PRIVATE $<TARGET_OBJECTS:parasite-eve-original-pad>
+        $<TARGET_OBJECTS:parasite-eve-original-actor-animation>
+        $<TARGET_OBJECTS:parasite-eve-original-akao>
+        $<TARGET_OBJECTS:parasite-eve-original-shadow>
+        $<TARGET_OBJECTS:parasite-eve-original-disc>
+        $<TARGET_OBJECTS:parasite-eve-original-camera>)
     target_sources(test-host-settings PRIVATE $<TARGET_OBJECTS:parasite-eve-original-pad>
         $<TARGET_OBJECTS:parasite-eve-original-camera>
         $<TARGET_OBJECTS:parasite-eve-original-disc> $<TARGET_OBJECTS:parasite-eve-original-actor-animation>)

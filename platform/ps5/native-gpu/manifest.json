@@ -212,7 +212,7 @@
       "added": false,
       "size": 4422,
       "before": "6be8c2eb4ce785db34e5bad393c083488d27976bcf254a12baf43410c0e0fb02",
-      "after": "c90d9d47023f388b1a4d930561c028daa66d842a9d36369ec2830a1839eabe41"
+      "after": "f839db26b9b41f34039fc575058c4473753bc666be3fe16649ad1a3c8bcc9e98"
     },
     {
       "component": "game",
@@ -2995,7 +2995,7 @@
     },
     {
       "path": "include/pe1/inventory_queries.h",
-      "sha256": "4fe492c8968a54001e34bfa3785a0da6acf97a1301a9ba0a0c4b97b776f91fa5"
+      "sha256": "49b0293e805df9e15122dfdfcb17de9b72804b20a0e2bbc9081142cf5dbf3a6e"
     },
     {
       "path": "include/pe1/inventory_runtime_types.h",
@@ -3775,7 +3775,7 @@
     },
     {
       "path": "include/pe1/scene_room.h",
-      "sha256": "6ed7d9324266516668feead8c130c2e9144bf19e9d7beb0b457102c750c4bacd"
+      "sha256": "283b98fbd96719adc58ac3ec18177d8c4d0cd54128e8b31c1d5374dc61d888d0"
     },
     {
       "path": "include/pe1/scene_room_load.h",
@@ -3839,7 +3839,7 @@
     },
     {
       "path": "include/pe_hooks.h",
-      "sha256": "dedb979456123ce22825815ed9546f22efa46cd93fe49496fdc6c917db014e55"
+      "sha256": "2307e1b71dbaf105474348a4a453501978cfd4102a51f9b2c45bb7958653415a"
     },
     {
       "path": "include/pe_model_texture_pages.h",
@@ -3847,7 +3847,7 @@
     },
     {
       "path": "mods/CMakeLists.txt",
-      "sha256": "2fc08d9dd61f0037ffc77b2d716c3791283917f98a91fed1542d70fced3660ac"
+      "sha256": "7e27273c51f130a709f3ff8fc637129e035ddeed6e26f5e91df0402e0f9ee357"
     },
     {
       "path": "mods/host/pe_api_native.c",
@@ -3915,7 +3915,7 @@
     },
     {
       "path": "mods/host/pe_equip_sync.c",
-      "sha256": "c90d9d47023f388b1a4d930561c028daa66d842a9d36369ec2830a1839eabe41"
+      "sha256": "f839db26b9b41f34039fc575058c4473753bc666be3fe16649ad1a3c8bcc9e98"
     },
     {
       "path": "mods/host/pe_extension_store.c",
@@ -3987,23 +3987,23 @@
     },
     {
       "path": "mods/host/pe_mod_host.c",
-      "sha256": "c01b7b394ca75a5f55f5c1d1cd64a8395f11ba997743464043931eab122079af"
+      "sha256": "168fbb4c4ebb876884666b1204a1363ee31f4d221ec1a7fcf081be8c0394d463"
     },
     {
       "path": "mods/host/pe_mod_host.h",
-      "sha256": "c940f01d565d70601110e32cd3964fde51a8ee6cae783f1f4f7308460da4d102"
+      "sha256": "5386a8460d54f8a07fdf92f44a9fc5c65ac3b0e8aee60b8fcf586aa01fa25c2d"
     },
     {
       "path": "mods/host/pe_mod_menu.c",
-      "sha256": "7e564217ad20c2460bf3d9f23722fc9e6b1ff7f842f26e0a2b925f814185a80f"
+      "sha256": "cffd63c88535c1ffbc5d0454e0f3c4d4fa9eda848ea320b5db93f2515ae8ac84"
     },
     {
       "path": "mods/host/pe_mod_menu.h",
-      "sha256": "aa47c8cd54f7cc4b4706b00d1e684e0400c1c1e937e068bc2ab169f80dd79fb1"
+      "sha256": "e79295fdb2fdeaff7fc24ce7a3ed72cfd75ffd05e0052be209e52f204baeaf26"
     },
     {
       "path": "mods/host/pe_mod_panel.c",
-      "sha256": "73c5e1414f0ee8676a85398e035a44af05f309524a0a8eb9c2f6ffb552b3d1e8"
+      "sha256": "a5eeb752cd7647ebfaf99dc457a668f1b940f097aaee02371095c7350130c571"
     },
     {
       "path": "mods/host/pe_model.c",
@@ -4075,11 +4075,11 @@
     },
     {
       "path": "mods/host/pe_save.c",
-      "sha256": "1c7506a1e885a58da068da760f1c853bac92bdc2ad25ae28c45d60976104d31f"
+      "sha256": "aa051e846947753958bfc0bf2e8e5c2a7f85a67143e3994ac3d04a23b7881b61"
     },
     {
       "path": "mods/host/pe_save.h",
-      "sha256": "7c9fe2d9646fec279b8d9461db010d7f8c51674c693cbe58193fecbed7647aa2"
+      "sha256": "a948b25d1da3ac1467fae3f19ddeffdd101849c79a4e628cfaddecdbd169301f"
     },
     {
       "path": "mods/host/pe_save_admission.h",
@@ -4331,7 +4331,7 @@
     },
     {
       "path": "mods/pe_qol/pe_move.c",
-      "sha256": "be619d85c7fe868ce29b4cb91e9dca3aa0dcc2f6e70054a45de147b09f11726b"
+      "sha256": "1fd6016b5d56e440e3b095e5fa485ec4e194ed708fadd0f3b1e4298101daca01"
     },
     {
       "path": "mods/pe_qol/pe_qol.c",
@@ -4495,7 +4495,7 @@
     },
     {
       "path": "src/main/item/active_list.c",
-      "sha256": "2df63573a9484ac89d263e61a6254c7bccde1a05133f42952e34fa914c948797"
+      "sha256": "a0df69bcd7fa1726fa096331b6534ee0455882ec5133f69d480b2bd358b8b373"
     },
     {
       "path": "src/main/item/armor_capacity.c",
