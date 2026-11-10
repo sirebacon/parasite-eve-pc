@@ -872,6 +872,7 @@ if(BUILD_TESTING)
         $<TARGET_OBJECTS:parasite-eve-original-actor-animation>
         $<TARGET_OBJECTS:parasite-eve-original-akao>
         $<TARGET_OBJECTS:parasite-eve-original-shadow>
+        $<TARGET_OBJECTS:parasite-eve-original-entity-textures>
         $<TARGET_OBJECTS:parasite-eve-original-disc>
         $<TARGET_OBJECTS:parasite-eve-original-camera>)
     target_sources(test-host-settings PRIVATE $<TARGET_OBJECTS:parasite-eve-original-pad>
