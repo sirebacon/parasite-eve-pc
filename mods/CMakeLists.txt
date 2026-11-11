@@ -1,7 +1,7 @@
 # Mod host and mods, built only with -DPE_MODS=ON. See mods/README.md.
 # Each mod is a folder here holding .c files and defining `const PeMod pe_mod_<folder>`.
 # pe_hello is the example mod; add it to the list to build it.
-set(PE_MOD_LIST pe_qol pe_rebalance pe_economy pe_rewards pe_catalog pe_shops pe_collection pe_wardrobe pe_stacks pe_warp pe_quicksave pe_cheats CACHE STRING "Mods built into the game (folder names)")
+set(PE_MOD_LIST pe_qol pe_rebalance pe_economy pe_rewards pe_catalog pe_shops pe_collection pe_wardrobe pe_stacks pe_warp pe_quicksave pe_cheats pe_phone CACHE STRING "Mods built into the game (folder names)")
 # Existing build directories may still cache the now-parked language mod.
 if("pe_lang" IN_LIST PE_MOD_LIST)
     list(REMOVE_ITEM PE_MOD_LIST pe_lang)
@@ -12,6 +12,7 @@ set(pe_host_sources
     host/pe_mod_host.c      # registry, hooks, services, events, logs
     host/pe_mod_menu.c      # Mods panel rows and pe_mods.ini
     host/pe_mod_panel.c     # the F1 panel: navigation and input
+    host/pe_combat_presets.c # combined presets; features retain their own settings
     host/pe_pages.c         # PE Enhancements page layout
     host/pe_game.c          # game access helpers
     host/pe_game_facts.c    # game facts as tables: effect names and groups, power tags
@@ -45,6 +46,11 @@ if(PE_PS5_PLUGINS AND NOT PE_PS5_GPU_NATIVE)
     list(REMOVE_ITEM pe_host_sources host/ui/pe_ui_gpu.c)
     list(APPEND pe_host_sources host/ui/pe_ui_ps5_cpu.c)
 endif()
+# The native battle module is compiled only for an explicit prototype build.
+list(REMOVE_ITEM PE_MOD_LIST pe_melee)
+if(PE_MELEE_PROTOTYPE)
+    list(APPEND PE_MOD_LIST pe_melee)
+endif()
 set(pe_mod_sources ${pe_host_sources})
 set(pe_mod_decls "")
 set(pe_mod_refs "")
@@ -56,10 +62,26 @@ foreach(mod IN LISTS PE_MOD_LIST)
 endforeach()
 configure_file(pe_mod_list.c.in ${CMAKE_CURRENT_BINARY_DIR}/pe_mod_list.c @ONLY)
 
+# Phone Calls: the game's calls are a text file (pe_phone/calls/pe1.txt), built into the game as
+# bytes; players get an editable copy in their pe_calls folder. Editing it reconfigures the build.
+if("pe_phone" IN_LIST PE_MOD_LIST)
+    set(pe_calls_txt ${CMAKE_CURRENT_SOURCE_DIR}/pe_phone/calls/pe1.txt)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${pe_calls_txt})
+    file(READ ${pe_calls_txt} pe_calls_hex HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," pe_calls_bytes "${pe_calls_hex}")
+    file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/pe_calls_builtin.c CONTENT
+        "/* Generated from mods/pe_phone/calls/pe1.txt: edit that file, not this one. */\nconst unsigned char g_pe_calls_pe1_txt[] = {@pe_calls_bytes@ 0};\nconst unsigned g_pe_calls_pe1_txt_size = sizeof g_pe_calls_pe1_txt - 1;\n"
+        @ONLY)
+    list(APPEND pe_mod_sources ${CMAKE_CURRENT_BINARY_DIR}/pe_calls_builtin.c)
+endif()
+
 add_library(pe-mods OBJECT ${pe_mod_sources} ${CMAKE_CURRENT_BINARY_DIR}/pe_mod_list.c)
 target_include_directories(pe-mods PRIVATE ${PROJECT_SOURCE_DIR}/include host
     "$<TARGET_PROPERTY:SDL3::SDL3,INTERFACE_INCLUDE_DIRECTORIES>")
-target_compile_definitions(pe-mods PRIVATE __psyz)
+target_compile_definitions(pe-mods PRIVATE __psyz PE_COMBAT_PRESETS=1)
+if(PE_MELEE_PROTOTYPE)
+    target_compile_definitions(pe-mods PRIVATE PE_MELEE_PROTOTYPE=1)
+endif()
 target_link_libraries(pe-mods PRIVATE psyz)
 if(TARGET pe_download_json AND TARGET pe_download_zip)
     target_link_libraries(pe-mods PRIVATE pe_download_json pe_download_zip)
@@ -168,17 +190,12 @@ if(BUILD_TESTING AND "pe_rebalance" IN_LIST PE_MOD_LIST)
         pe_rebalance/pe_atb_items.c pe_rebalance/pe_pe_balance.c host/pe_game_facts.c)
     add_executable(test-mod-combine ${PROJECT_SOURCE_DIR}/tests/pe_mod_combine_colour_test.c
         pe_rebalance/pe_combine.c pe_rebalance/pe_panacea.c)
-    add_executable(test-mod-pe ${PROJECT_SOURCE_DIR}/tests/pe_mod_pe_test.c pe_rebalance/pe_pe_balance.c
-        ${PROJECT_SOURCE_DIR}/src/main/item/actions.c)
+    add_executable(test-mod-pe ${PROJECT_SOURCE_DIR}/tests/pe_mod_pe_test.c pe_rebalance/pe_pe_balance.c)
     foreach(target test-mod-atb test-mod-combine test-mod-pe)
         target_include_directories(${target} PRIVATE ${PROJECT_SOURCE_DIR}/include host pe_rebalance)
         target_compile_definitions(${target} PRIVATE __psyz PE_MODS=1)
         target_link_libraries(${target} PRIVATE psyz)
     endforeach()
-    if(MINGW)
-        # Allow unused original item-module entry points to be discarded in this fixture.
-        target_compile_options(test-mod-pe PRIVATE -fno-asynchronous-unwind-tables)
-    endif()
     add_test(NAME mod-atb COMMAND test-mod-atb)
     add_test(NAME mod-combine COMMAND test-mod-combine)
     add_test(NAME mod-panacea-off COMMAND test-mod-combine --panacea-off)
@@ -192,7 +209,7 @@ endif()
 # than only through the standalone PowerShell helpers.
 function(pe_feature_test name)
     add_executable(test-mod-${name} ${ARGN})
-    target_include_directories(test-mod-${name} PRIVATE ${PROJECT_SOURCE_DIR}/include host pe_economy pe_catalog pe_shops pe_collection pe_wardrobe)
+    target_include_directories(test-mod-${name} PRIVATE ${PROJECT_SOURCE_DIR}/include host pe_economy pe_catalog pe_shops pe_collection pe_wardrobe pe_phone)
     target_compile_definitions(test-mod-${name} PRIVATE __psyz PE_MODS=1)
     target_link_libraries(test-mod-${name} PRIVATE psyz)
     if(MSVC)
@@ -222,6 +239,15 @@ if(BUILD_TESTING AND "pe_economy" IN_LIST PE_MOD_LIST)
 endif()
 if(BUILD_TESTING)
     pe_feature_test(registry ${PROJECT_SOURCE_DIR}/tests/pe_mod_registry_test.c host/pe_registry.c)
+    pe_feature_test(combat-presets ${PROJECT_SOURCE_DIR}/tests/pe_combat_presets_test.c host/pe_combat_presets.c)
+    target_compile_definitions(test-mod-combat-presets PRIVATE PE_COMBAT_PRESETS=1)
+endif()
+if(BUILD_TESTING AND "pe_phone" IN_LIST PE_MOD_LIST)
+    # The pure core and the game's own pack; the game side is covered by pe-native-debug's
+    # scenarios/phone_calls.py.
+    pe_feature_test(phone ${PROJECT_SOURCE_DIR}/tests/pe_mod_phone_test.c pe_phone/pe_phone_text.c
+        pe_phone/pe_phone_record.c pe_phone/pe_phone_pick.c pe_phone/pe_phone_file.c)
+    target_compile_definitions(test-mod-phone PRIVATE PE_PHONE_CALLS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/pe_phone/calls/pe1.txt")
 endif()
 if(BUILD_TESTING AND "pe_wardrobe" IN_LIST PE_MOD_LIST)
     pe_feature_test(skin-bounds ${PROJECT_SOURCE_DIR}/tests/pe_mod_skin_bounds_test.c)
