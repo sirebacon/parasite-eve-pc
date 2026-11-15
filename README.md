@@ -13,8 +13,11 @@ Download the game from [GitHub Releases](https://github.com/khasinski/parasite-e
 This is an early alpha; see the release notes for available platforms and known issues.
 See the [changelog](CHANGELOG.md) for changes.
 
-You need your own **North American CUE/BIN images**. Game data is not included.
-Keep each CUE file next to its BIN file.
+Works with [RecompLauncher](https://recomplauncher.com): it installs and updates the game from these releases and sets it up with your Disc 1 image.
+
+You need your own **North American CUE/BIN or CHD images**, or the **Japanese** ones (SLPS-01230/01231). Game data is not included.
+With the Japanese discs the game plays as the Japanese release does: Japanese text, kana name entry, its balance, Circle to confirm and its own memory card files. Don't mix discs of the two releases.
+Keep each CUE file next to its BIN file. A CHD is a single file (its first track must be the data track, as `chdman createcd` makes from a CUE/BIN).
 
 1. Launch Parasite Eve and select your disc images. Selecting both discs enables automatic switching.
 2. You can start with either disc. If the other is needed, the game asks for it by name.
@@ -29,9 +32,15 @@ The left stick provides analog movement. **Escape → Controls → Field run thr
 Settings and selected disc paths are saved automatically. Memory cards are kept in `memory-cards` beside your user preferences. Older `bu00`/`bu10` cards from the launch or executable folder are imported once, keeping the original files.
 
 For portable storage, create an empty `portable.txt` beside the executable (beside the `.app` on macOS), or launch with `--portable`. Settings, memory cards, mods and downloaded backgrounds then use the `userdata` folder there. Keep the application in a writable folder. An explicit `PE_CONFIG_HOME` takes precedence. Existing user saves remain in their original location; copy your preferences folder into `userdata` to move them.
+The game ships with no translations. Put a `.pelang` language pack in the `lang` folder beside the game and start it: the first start that finds packs asks which language to use. To change it later, choose it under **F1 → Language** and restart. Language packs work with **All mods** off. Missing translations use the original text.
+
+Translators can try the [Simplified Chinese rendering pilot](localization/pilots/zh-Hans/README.md). It demonstrates Chinese fonts and dialogue; it is not a complete translation.
+
 **Escape → Graphics** includes geometry correction, antialiasing, model texture filtering and an optional **Widescreen** aspect ratio. Widescreen shows more of the original background where available; narrow scenes and movies stay in 4:3.
 
 For smoother motion, enable **Escape → Graphics → Gameplay display → 60 Hz (interpolated)**. This optional setting smooths models and camera movement while keeping the original game speed. It is off by default.
+
+**Escape → Graphics → VSync** chooses how frames reach the display. **Auto** (the default) syncs to displays running at about 60 Hz and uses the game's own frame limiter on others, such as 120 Hz or 144 Hz monitors. **On** always waits for the display's refresh, which avoids tearing at any refresh rate. **Off** always uses the frame limiter; like Auto on a high-refresh display, it can tear. Game speed stays the same in every mode, and the change applies immediately. It is saved as `vsync` in the `[graphics]` section of `parasite-eve.toml` (`0` Auto, `1` On, `2` Off).
 
 If the game crashes, it saves a report and shows where to find it. Attach that file when reporting the problem on Discord.
 
@@ -40,7 +49,9 @@ If the game crashes, it saves a report and shows where to find it. Attach that f
 Downloads include an optional mod host. When building from source, enable it with `-DPE_MODS=ON`. Without it, the
 `PE_HOOK(...)` lines in the game compile to nothing. In a mod build, **F1** opens the Mods panel;
 mods start only after **F1 → Manage mods → All mods** is turned on and the game restarted.
-Settings are saved in `pe_mods.ini`. See [the mod guide](mods/README.md) for writing a mod.
+Settings are saved in `pe_mods.ini`. [Built-in mods](docs/MODS.md) describes each mod, its F1 settings and defaults,
+and what the `mods` folder is for: the mods are built into the game, so that folder holds only the developer
+guide. See [the mod guide](mods/README.md) for writing a mod.
 
 ### PE Enhancements
 
@@ -79,7 +90,7 @@ Open **F1 → PE Enhancements** to configure them.
   register their own creatures and costumes.
 - **Quick save** (`pe_quicksave`): ten save slots in the game's own card format. **F10** saves to
   the current slot, **F11** loads it, **F12** cycles the slot (also **F1 → Quick save**). Files
-  are kept beside the preferences as `quicksave_<slot>.mcd`; loading restarts the saved room the
+  are kept beside the preferences as `quicksave_<slot>.pec`; loading restarts the saved room the
   way a loaded save does. Works in the free field, outside battles, movies and room changes.
 - **Cheats** (`pe_cheats`): **F1 → Cheats** — God mode, Infinite ammo and PE, Win this battle,
   and Learn all / Restore PE powers. Every cheat is off until chosen; while they are off the mod
