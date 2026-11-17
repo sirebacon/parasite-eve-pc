@@ -5,7 +5,7 @@
 # pe_fonts adds F1 > Font (Original, or a picture from mods/fonts/); Original is the default.
 set(pe_default_mods pe_qol pe_rebalance pe_economy pe_rewards pe_catalog pe_shops pe_collection pe_wardrobe pe_styles pe_stacks pe_warp pe_quicksave pe_cheats pe_phone)
 if(NOT PE_PS5_GAME)
-    list(APPEND pe_default_mods pe_lang pe_fonts)
+    list(APPEND pe_default_mods pe_lang pe_fonts pe_bugrec)
 endif()
 set(PE_MOD_LIST ${pe_default_mods} CACHE STRING "Mods built into the game (folder names)")
 
