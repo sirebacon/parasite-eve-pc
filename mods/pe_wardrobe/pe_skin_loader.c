@@ -335,9 +335,18 @@ static void *pe_room_copy(const PeSkin *k, const void *p) {
     return NULL;
 }
 
+/* Hold rows: the skin's idle pose for a game row that doesn't fit the skin and has no copy. */
+#define PE_HOLD_MAX (12u + (3u + 64u * 3u) * 4u)
+static u8 s_hold[PE_ROWS_PER_BANK + 1][PE_HOLD_MAX];   /* one per slot, the last for a running row */
+
+static int pe_is_hold(const void *p) {
+    return (const u8 *)p >= s_hold[0] && (const u8 *)p < s_hold[0] + sizeof s_hold;
+}
+
 static int pe_ours(const PeSkin *k, const void *p) {
     const u8 *b = p;
     int d;
+    if (pe_is_hold(p)) return 1;
     if (b >= k->model.data && b < k->model.data + k->model.size) return 1;
     if (k->nrooms && b >= k->rooms.data && b < k->rooms.data + k->rooms.size) return 1;
     for (d = 1; d <= 8; ++d) if (b >= k->day[d].data && b < k->day[d].data + k->day[d].size) return 1;
@@ -349,6 +358,76 @@ static int pe_ours(const PeSkin *k, const void *p) {
 static int pe_fits(const void *row) {
     const RenderObjectHeader *h = g_GameState.bank_slots[0];
     return h && ((const u8 *)row)[1] + 1u == h->part_count;
+}
+
+/* The skin bundle's own row `id`, or NULL. */
+static const u8 *pe_skin_row(const PeSkin *k, unsigned id) {
+    const SceneAssetDirectory *dir = pe_dir(&k->model);
+    const SceneBankAssetRecord *rec;
+    u32 i;
+    if (!dir) return NULL;
+    rec = SceneAsset_ResolveOffset(k->model.data, dir->bankRowEntries & 0x3FFFFFu);
+    for (i = 0; i < dir->bankRowEntries >> 22; ++i)
+        if (rec[i].source.bytes.id == id) return SceneAsset_ResolveOffset(k->model.data, rec[i].source.offsetAndId & 0xFFFFFFu);
+    return NULL;
+}
+
+/* Frame 0 of each channel (3 translations, then 3 angles per bone). Constant or not, the first
+ * sample sits right after the marker: a halfword for wide channels, a byte otherwise. */
+static int pe_first_samples(const u8 *p, s16 *out, unsigned max) {
+    const unsigned frames = p[2], n = 3u + (p[1] + 1u) * 3u;
+    const int shrt = (p[0] & 3u) == 2u;
+    const u32 stride = ((frames >> 1) + 1u) * 4u, bstride = shrt ? stride : ((frames >> 2) + 1u) * 4u;
+    u32 cur = 12u;
+    unsigned c;
+    if (n > max || !pe_row_length(p, 0x10000u)) return 0;
+    for (c = 0; c < n; ++c) {
+        const int wide = c < 3 || shrt;
+        const int constant = wide ? (p[cur] | p[cur + 1] << 8) != 0 : p[cur] != 0;
+        out[c] = wide ? (s16)(p[cur + 2] | p[cur + 3] << 8) : (s16)p[cur + 1];
+        cur += constant ? 4u : wide ? stride : bstride;
+    }
+    return (int)n;
+}
+
+/* A row the skin can play in place of `game` (more or fewer bones than its parts): the skin's idle
+ * pose held still, with the game row's frame count, hit values and starting position, so scripts
+ * waiting on the animation time it the same and nothing reads past the skin's matrices. */
+static void *pe_hold_row(const PeSkin *k, const u8 *game, int slot) {
+    const RenderObjectHeader *h = g_GameState.bank_slots[0];
+    const u8 *idle = pe_skin_row(k, PE_IDLE_MODE);
+    s16 g[3 + 128 * 3], s[3 + 64 * 3];
+    u8 *o = s_hold[slot];
+    unsigned c, n;
+    int shrt;
+    if (!h || !idle || idle[1] + 1u != h->part_count || !pe_first_samples(game, g, 3 + 128 * 3) ||
+        !(n = (unsigned)pe_first_samples(idle, s, 3 + 64 * 3)))
+        return NULL;
+    shrt = (idle[0] & 3u) == 2u;
+    memcpy(o, idle, 2);
+    o[2] = game[2];
+    memcpy(o + 3, game + 3, 9);
+    for (c = 0; c < n; ++c) {
+        u8 *ch = o + 12u + 4u * c;
+        const s16 v = c < 3 ? g[c] : s[c];
+        if (c < 3 || shrt) { ch[0] = 1; ch[1] = 0; ch[2] = (u8)v; ch[3] = (u8)((u16)v >> 8); }
+        else { ch[0] = 1; ch[1] = (u8)v; ch[2] = 0; ch[3] = 0; }
+    }
+    return o;
+}
+
+/* Any slot still holding a game row the skin can't play gets a hold row. */
+static void pe_guard_rows(const PeSkin *k) {
+    int slot;
+    for (slot = 0; slot < PE_ROWS_PER_BANK; ++slot) {
+        u8 *p = g_GameState.bank_rows[0][slot];
+        void *hold;
+        if (!p || pe_ours(k, p) || pe_fits(p) || !pe_row_length(p, 0x10000u)) continue;
+        if (!(hold = pe_hold_row(k, p, slot))) continue;
+        pe_log("skin", "%s: slot %d row has %u bones, no copy: idle pose held", k->folder, slot, p[1] + 1u);
+        if (!s_replaced[slot]) s_replaced[slot] = p;
+        g_GameState.bank_rows[0][slot] = hold;
+    }
 }
 
 static int pe_any_ours(const void *p) {
@@ -391,6 +470,10 @@ static void pe_running_row(const PeSkin *k) {
         if (s_replaced[slot] == a && pe_ours(k, g_GameState.bank_rows[0][slot])) copy = g_GameState.bank_rows[0][slot];
     if (!copy && k->nrooms) copy = pe_room_copy(k, a);
     if (copy && ((u8 *)copy)[2] == ((u8 *)a)[2] && pe_fits(copy)) player->action_data = copy;
+    else if (!pe_fits(a) && (copy = pe_hold_row(k, a, PE_ROWS_PER_BANK)) != NULL) {
+        pe_log("skin", "%s: running row has %u bones, no copy: idle pose held", k->folder, ((u8 *)a)[1] + 1u);
+        player->action_data = copy;
+    }
 }
 
 /* The weapon model follows the player's part animation_id (0x12, Aya's hand). */
@@ -412,6 +495,7 @@ static void pe_keep(PeSkin *k) {
         pe_point_bundle(k->model.data);
         pe_point_day(k->day[pe_day()].data, 1);
         pe_room_rows(k);
+        pe_guard_rows(k);
         pe_running_row(k);
     } else if (s_pointed) {
         pe_restore_rows();
@@ -449,6 +533,79 @@ static void pe_rebind_player(void) {
     Render_InitRoomPrimState(&player->render_object);
     Render_DrawWithAnim(&player->render_object, player->action_data, 0, &g_RenderLightingState);
     player->render_object.header->shadow_radius = player->render_object.hit_cylinder.radius * 2;
+}
+
+/* ---- mirror ---- */
+/* Seven rooms (mirror_model.c) reflect the player with an actor of their own: it copies her pose
+ * but draws the room's copy of Aya's mesh. While a skin is worn that actor draws the skin's model
+ * from a buffer of ours; its own model fields go back when the skin comes off. */
+static FieldActor *s_mirror;                 /* the actor we gave the skin's model, or NULL */
+static RenderObjectEntity s_mirror_own;      /* its own model fields, from before */
+static u8 *s_mirror_buf;
+static size_t s_mirror_cap;
+
+static void pe_mirror_fields(RenderObjectEntity *to, const RenderObjectEntity *from) {
+    to->header = from->header;
+    to->parts = from->parts;
+    to->vertices = from->vertices;
+    to->vertex_colours = from->vertex_colours;
+    to->primitive_descriptors = from->primitive_descriptors;
+    to->model_section14 = from->model_section14;
+    to->bounds_vertices = from->bounds_vertices;
+    to->projection_origin = from->projection_origin;
+    to->matrix_commands = from->matrix_commands;
+    to->primitive_buffer = from->primitive_buffer;
+    to->hit_cylinder = from->hit_cylinder;
+    to->animation_entries = from->animation_entries;
+    to->matrices = from->matrices;
+    to->active_matrix = NULL;
+    to->draw_count = from->draw_count;
+}
+
+static FieldActor *pe_mirror_actor(void) {
+    FieldActor *a;
+    for (a = g_FieldActorListHead; a; a = a->next)
+        if (a != g_PlayerEntity && (a->render_object.flags_9C & 0x1000) && a->render_object.animation_state == 5 &&
+            a->render_object.reflection_owner == g_PlayerEntity)
+            return a;
+    return NULL;
+}
+
+static void pe_mirror(void) {
+    FieldActor *m = g_PlayerEntity ? pe_mirror_actor() : NULL;
+    RenderObjectHeader *want = s_pointed && g_PlayerEntity ? g_PlayerEntity->render_object.header : NULL;
+    RenderObjectEntity tmp;
+    size_t size;
+    s8 *setup;
+    u16 shadow;
+    if (s_mirror && s_mirror != m) s_mirror = NULL;             /* a room change freed it */
+    if (!m) return;
+    if (!want) {
+        if (s_mirror) {
+            pe_mirror_fields(&m->render_object, &s_mirror_own);
+            s_mirror = NULL;
+            pe_log("skin", "mirror: the room's own model back");
+        }
+        return;
+    }
+    if (s_mirror && m->render_object.header == want) return;
+    size = 2 * (want->packet34_count * sizeof(RenderPacket34) + want->packet28_count * sizeof(RenderPacket28) +
+                want->packet24_count * sizeof(RenderPacket24) + want->packet1c_count * sizeof(RenderPacket1C)) +
+           want->animation_entry_count * sizeof(RenderAnimationLookupEntry) + want->part_count * sizeof(RenderMatrix);
+    if (size > s_mirror_cap) {
+        u8 *b = realloc(s_mirror_buf, size);
+        if (!b) return;
+        s_mirror_buf = b;
+        s_mirror_cap = size;
+    }
+    if (!s_mirror) s_mirror_own = m->render_object;
+    tmp = m->render_object;
+    shadow = want->shadow_radius;                               /* the setup clears it in the shared header */
+    Render_SetupEntityPrims(&tmp, want, s_mirror_buf, 0x3C0, 0x100, 0, 0x1C0, 2, &setup, 1);
+    want->shadow_radius = shadow;
+    pe_mirror_fields(&m->render_object, &tmp);
+    s_mirror = m;
+    pe_log("skin", "mirror: wearing the skin's model");
 }
 
 /* ---- hooks ---- */
@@ -520,6 +677,7 @@ static int pe_on_frame(void *ctx, void *user) {
     } else if (s_pointed || k) {
         pe_keep(s_tex == k ? k : s_pointed);
     }
+    pe_mirror();
     return 0;
 }
 
@@ -537,6 +695,7 @@ static int pe_on_load(void *ctx, void *user) {
     (void)user;
     s_tex_known = 0;
     s_tex = s_pointed = s_room_pack = NULL;
+    s_mirror = NULL;
     s_gun_written = -1;
     memset(s_replaced, 0, sizeof s_replaced);
     return 0;
