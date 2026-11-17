@@ -74,7 +74,7 @@ Library operations include `advance`, `press`, `wait_until`, `wait_stable`,
 child after a deadline; read/write failures during advance terminate it immediately.
 `shot(label)` saves numbered PNG evidence from `frame.ppm`; a failed `wait_until`
 also attempts a screenshot without masking its primary timeout error. Portable
-save export and Ctrl+C/signal-specific process cleanup are not implemented yet. Generic
+save helpers are described below; Ctrl+C/signal-specific process cleanup is not implemented yet. Generic
 waits cap the final step at the remaining frame budget, unlike Python's overshoot.
 
 ## Battle helpers and trace inspection
@@ -115,13 +115,54 @@ a 64-megapixel limit. Existing PNG output files are refused. Missing frames fail
 explicitly rather than returning a path to a nonexistent screenshot. Pixel content
 matches the Python converter; compressed PNG bytes need not match.
 
-## Components and contracts
+## Save integrity and portable export
+
+`pe-save` handles 8192-byte card envelopes, the game CRC, PEMC record containers,
+legacy block discovery, the PKEY/SORT compatibility window, and generic PEEX v1
+companions. Unknown records and provider payload bytes remain opaque. The game CRC
+implementation is shared directly with `save-editor/src/crc.rs`, without linking
+the editor's GUI. CRC32 uses pinned `crc32fast` 1.5.4 (MIT OR Apache-2.0).
+
+`PortableSave` validates game/container/record checksums, link generation/name,
+companion size and outer/internal/section checksums, section ordering and bounds.
+This checks the save envelope; it does not decode or prove validity of the game's
+state fields or each mod provider's private payload. Unknown/damaged/unsupported
+tails are refused by the validated export path. Raw `GameSession::save_block`
+remains available for inspecting exports and constructing negative test fixtures.
+
+`GameSession::{mods_tail, save_block, save_files, save_to}` and
+`SaveClient::attached(control_dir, timeout)` implement the Python export helpers.
+`save_files` returns a validated `PortableSave`; `files()` provides the relative
+card/companion paths and original bytes. The native reply's companion metadata
+must match the card's link. A stale unreferenced companion is not carried over.
+
+```powershell
+cargo run --locked --offline -p pe-tools -- card-check 'D:\runs\portable\BASLUS-006620000000A'
+cargo run --locked --offline -p pe-tools -- card-copy 'D:\runs\portable\BASLUS-006620000000A' 'D:\runs\copy'
+cargo run --locked --offline -p pe-tools -- save-export --control-dir 'D:\runs\game\ctl' --out 'D:\runs\export' --slot 1
+```
+
+`save-export` requires an advancing game in free field, and accepts
+`PE_DEBUG_CONTROL` plus `--timeout-ms` (default 30000). No live field/save-loading
+acceptance has been claimed yet. The destination must be new and its parent must
+exist. Validation happens before creating it; companion bytes are written before
+the card, existing destinations are refused, and ordinary write failures clean up
+only newly created files/empty directories. This is not an atomic directory
+transaction across crashes or abrupt interruption.
+
+`GameSession::card_files(CardPort::{One, Two})` lists sorted matching card files.
+`mods_log()` / `play_log()` provide log lines with replacement for invalid UTF-8
+and empty lists for absent logs. `LaunchOptions::extra_args` forwards native
+arguments as separate process arguments, matching the Python harness's hook.
+
+## Components
 
 | Crate | Implemented |
 |---|---|
 | `pe-protocol` | Commands/replies, control/battle/mod JSON, distinct trace event types, native pad bits, complete RNG snapshots |
-| `pe-session` | File/process transport, battle helpers, PNG screenshots, card/companion copies, input/frame waits and shutdown |
-| `pe-tools` | Attached command CLI, isolated `run`, battle/trace validation, PNG conversion, RNG validation |
+| `pe-save` | Card/container/companion integrity, opaque record preservation and validated bundle copy/export |
+| `pe-session` | File/process transport, battle/save helpers, PNG screenshots, logs/cards, input/frame waits and shutdown |
+| `pe-tools` | Attached command/save export, isolated `run`, card/battle/trace validation, PNG conversion, RNG validation |
 
 `rng-validate "STATE FRAME INDEX HEX1042"` prints a normalized snapshot without
 changing a game. It retains unsigned 32-bit generator/frame values, index -1..520
@@ -134,6 +175,6 @@ command intact because it may still execute. After a crashed client, inspect the
 game/channel before manually removing a stale `client.lock`; retrying mutations
 can apply them twice. Use a fresh control directory for a new game session.
 
-Save-format/companion validation, save export, reusable menu/field/battle flows and
-scenario runners remain on the migration checklist. Live battle/RNG acceptance and
+Game-state/provider payload decoding, reusable menu/field/battle flows and scenario
+runners remain on the migration checklist. Live save/battle/RNG acceptance and
 Python caller cutover are still pending; no Python entry points have been retired.

@@ -14,6 +14,9 @@ Usage:
   pe-tools battle-validate SNAPSHOT.json
   pe-tools events BATTLE.jsonl
   pe-tools ppm-to-png INPUT.ppm OUTPUT.png
+  pe-tools card-check CARD
+  pe-tools card-copy CARD NEW_DIRECTORY
+  pe-tools save-export --control-dir DIR --out NEW_DIRECTORY [--slot 1] [--timeout-ms 30000]
   pe-tools run --exe EXE --disc CUE --disc2 CUE --run-dir NEW_DIR [OPTIONS]
   pe-tools --help
   pe-tools --version
@@ -47,6 +50,28 @@ fn run(args: Vec<String>) -> Result<(), (u8, String)> {
             Ok(())
         }
         Some("run") => run_game(&args[1..]),
+        Some("card-check") if args.len() == 2 => {
+            let save = pe_save::PortableSave::from_directory(std::path::Path::new(&args[1]))
+                .map_err(|e| (1, e.to_string()))?;
+            let mods = save.card().mods();
+            let records:Vec<_>=mods.records.iter().map(|r| serde_json::json!({"id":r.id,"version":r.version,"size":r.data.len(),"crc_ok":r.crc_ok,"source":format!("{:?}",r.source).to_lowercase()})).collect();
+            let sections:Vec<_>=save.companion().into_iter().flat_map(|c| c.sections()).map(|s| serde_json::json!({"key":s.key,"version":s.version,"reader":s.reader,"size":s.data.len()})).collect();
+            println!(
+                "{}",
+                serde_json::json!({"name":save.name(),"game_crc_ok":save.card().crc_ok(),"kind":format!("{:?}",mods.kind).to_lowercase(),"container_ok":mods.container_ok,"window_changed":mods.window_changed,"records":records,"sections":sections})
+            );
+            Ok(())
+        }
+        Some("card-copy") if args.len() == 3 => {
+            let save = pe_save::PortableSave::from_directory(std::path::Path::new(&args[1]))
+                .map_err(|e| (1, e.to_string()))?;
+            let path = save
+                .export_new(std::path::Path::new(&args[2]))
+                .map_err(|e| (1, e.to_string()))?;
+            println!("{}", path.display());
+            Ok(())
+        }
+        Some("save-export") => export_save(&args[1..]),
         Some("ppm-to-png") if args.len() == 3 => {
             pe_session::image::ppm_to_png(
                 std::path::Path::new(&args[1]),
@@ -108,6 +133,44 @@ fn run(args: Vec<String>) -> Result<(), (u8, String)> {
         }
         _ => Err(usage("unknown command or incorrect arguments")),
     }
+}
+fn export_save(args: &[String]) -> Result<(), (u8, String)> {
+    let mut control = env::var_os("PE_DEBUG_CONTROL").map(PathBuf::from);
+    let mut directory = None;
+    let mut slot = 1;
+    let mut timeout = 30000;
+    let mut i = 0;
+    let invalid = |text: &str| (2, text.to_owned());
+    while i < args.len() {
+        let value = args
+            .get(i + 1)
+            .ok_or_else(|| invalid("missing save-export option value"))?;
+        match args[i].as_str() {
+            "--control-dir" => control = Some(PathBuf::from(value)),
+            "--out" => directory = Some(PathBuf::from(value)),
+            "--slot" => {
+                slot = value
+                    .parse::<i32>()
+                    .map_err(|_| invalid("slot must be an i32"))?
+            }
+            "--timeout-ms" => {
+                timeout = value
+                    .parse::<u64>()
+                    .map_err(|_| invalid("timeout must be unsigned milliseconds"))?
+            }
+            _ => return Err(invalid("unknown save-export option")),
+        }
+        i += 2;
+    }
+    let directory = directory.ok_or_else(|| invalid("supply a new --out directory"))?;
+    let control = control
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| invalid("supply --control-dir or PE_DEBUG_CONTROL"))?;
+    let path = pe_session::save::SaveClient::attached(control, Duration::from_millis(timeout))
+        .save_to(&directory, slot)
+        .map_err(|e| (1, e.to_string()))?;
+    println!("{}", path.display());
+    Ok(())
 }
 fn run_game(args: &[String]) -> Result<(), (u8, String)> {
     let invalid = |s: &str| (2, s.to_owned());

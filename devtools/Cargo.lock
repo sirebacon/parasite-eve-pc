@@ -89,10 +89,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pe-save"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+]
+
+[[package]]
 name = "pe-session"
 version = "0.1.0"
 dependencies = [
  "pe-protocol",
+ "pe-save",
  "png",
 ]
 
@@ -101,7 +109,9 @@ name = "pe-tools"
 version = "0.1.0"
 dependencies = [
  "pe-protocol",
+ "pe-save",
  "pe-session",
+ "serde_json",
 ]
 
 [[package]]

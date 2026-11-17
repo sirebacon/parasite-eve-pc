@@ -8,3 +8,5 @@ publish.workspace = true
 [dependencies]
 pe-protocol.workspace = true
 pe-session.workspace = true
+pe-save.workspace = true
+serde_json.workspace = true

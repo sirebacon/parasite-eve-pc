@@ -28,6 +28,7 @@ pub struct LaunchOptions {
     pub frame_limit: u64,
     pub response_timeout: Duration,
     pub shutdown_timeout: Duration,
+    pub extra_args: Vec<std::ffi::OsString>,
 }
 impl LaunchOptions {
     pub fn new(executable: PathBuf, disc1: PathBuf, disc2: PathBuf, run_dir: PathBuf) -> Self {
@@ -42,6 +43,7 @@ impl LaunchOptions {
             frame_limit: 2_000_000,
             response_timeout: Duration::from_secs(60),
             shutdown_timeout: Duration::from_secs(10),
+            extra_args: vec![],
         }
     }
     fn command(&self) -> Result<Command, SessionError> {
@@ -65,6 +67,7 @@ impl LaunchOptions {
                 "--pad-at",
                 "1:0",
             ]);
+        command.args(&self.extra_args);
         Ok(command)
     }
 }
@@ -86,6 +89,11 @@ pub struct GameSession {
     response_timeout: Duration,
     shutdown_timeout: Duration,
     closed: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardPort {
+    One,
+    Two,
 }
 impl GameSession {
     pub fn launch(options: LaunchOptions) -> Result<Self, SessionError> {
@@ -215,6 +223,55 @@ impl GameSession {
     }
     pub fn frame_ppm(&self) -> PathBuf {
         self.directory.join("frame.ppm")
+    }
+    pub fn mods_tail(&mut self) -> Result<Vec<u8>, SessionError> {
+        crate::save::SaveClient::headless(self).mods_tail()
+    }
+    pub fn save_block(&mut self, slot: i32) -> Result<crate::save::RawSaveBlock, SessionError> {
+        crate::save::SaveClient::headless(self).save_block(slot)
+    }
+    pub fn save_files(&mut self, slot: i32) -> Result<pe_save::PortableSave, SessionError> {
+        crate::save::SaveClient::headless(self).save_files(slot)
+    }
+    pub fn save_to(&mut self, directory: &Path, slot: i32) -> Result<PathBuf, SessionError> {
+        crate::save::SaveClient::headless(self).save_to(directory, slot)
+    }
+    pub fn card_files(&self, port: CardPort) -> Result<Vec<PathBuf>, SessionError> {
+        let folder = self.directory.join(match port {
+            CardPort::One => "bu00",
+            CardPort::Two => "bu10",
+        });
+        let mut result = vec![];
+        for entry in io_at(&folder, fs::read_dir(&folder))? {
+            let entry = io_at(&folder, entry)?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|s| s.starts_with("BASLUS-00662"))
+                && io_at(&entry.path(), entry.file_type())?.is_file()
+            {
+                result.push(entry.path());
+            }
+        }
+        result.sort();
+        Ok(result)
+    }
+    fn log_lines(&self, name: &str) -> Result<Vec<String>, SessionError> {
+        let path = self.directory.join(name);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes)
+                .lines()
+                .map(str::to_owned)
+                .collect()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+            Err(source) => Err(SessionError::Io { path, source }),
+        }
+    }
+    pub fn mods_log(&self) -> Result<Vec<String>, SessionError> {
+        self.log_lines("pe_mods.log")
+    }
+    pub fn play_log(&self) -> Result<Vec<String>, SessionError> {
+        self.log_lines("pe_play_log.csv")
     }
     pub fn shot(&mut self, name: &str) -> Result<PathBuf, SessionError> {
         self.shots = self
@@ -655,7 +712,35 @@ mod tests {
                     .open("ctl/out")
                     .unwrap();
                 let verb = command.split_whitespace().next().unwrap();
-                if mode == "battle" {
+                if mode.starts_with("save") {
+                    let (block, companion) =
+                        crate::test_fixtures::save_bundle(mode != "save-no-companion");
+                    let name = crate::test_fixtures::NAME;
+                    if verb == "mods-tail" {
+                        fs::write("ctl/tail.bin", &block[pe_save::TAIL_AT..]).unwrap();
+                        writeln!(out, "ok mods-tail tail.bin").unwrap();
+                    } else if mode == "save-refused" {
+                        writeln!(out, "err save-block not in free field").unwrap();
+                    } else if words.len() == 3 {
+                        let request: Vec<_> = command.split_whitespace().collect();
+                        if request
+                            .get(1)
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .is_some_and(|slot| (1..=15).contains(&slot))
+                        {
+                            fs::write("ctl/block.bin", &block).unwrap();
+                            if let Some(companion) = companion {
+                                fs::write("ctl/companion.pex", companion).unwrap();
+                                writeln!(out, "ok save-block {name} companion={name}.00000004.pex")
+                                    .unwrap();
+                            } else {
+                                writeln!(out, "ok save-block {name}").unwrap();
+                            }
+                        } else {
+                            writeln!(out, "err save-block slot 1..15").unwrap();
+                        }
+                    }
+                } else if mode == "battle" {
                     let detail = match verb {
                         "battle-state" => {
                             include_str!("../../pe-protocol/fixtures/battle-state.json")
@@ -823,6 +908,92 @@ mod tests {
         fs::remove_file(session.frame_ppm()).unwrap();
         assert!(session.shot("missing").is_err());
         assert!(!session.directory().join("003-missing.png").exists());
+        session.quit().unwrap();
+    }
+    #[test]
+    fn save_helpers_export_portable_files_through_process_channel() {
+        let temp = Temp::new();
+        let mut session = temp.start(temp.options(), "save").unwrap();
+        let (block, companion) = crate::test_fixtures::save_bundle(true);
+        assert_eq!(session.mods_tail().unwrap(), block[pe_save::TAIL_AT..]);
+        let raw = session.save_block(1).unwrap();
+        assert_eq!(raw.bytes, block);
+        assert_eq!(
+            session.save_files(1).unwrap().companion().unwrap().bytes(),
+            companion.as_ref().unwrap()
+        );
+        let target = temp.0.join("exported");
+        let card = session.save_to(&target, 1).unwrap();
+        assert_eq!(fs::read(&card).unwrap(), block);
+        assert_eq!(
+            pe_save::PortableSave::from_directory(&card)
+                .unwrap()
+                .companion()
+                .unwrap()
+                .bytes(),
+            companion.unwrap()
+        );
+        assert!(session
+            .save_block(0)
+            .unwrap_err()
+            .to_string()
+            .contains("slot 1..15"));
+        assert!(session.save_to(&target, 1).is_err());
+        session.quit().unwrap();
+        assert_eq!(session.state().vblanks, 61);
+    }
+    #[test]
+    fn saves_without_companions_and_native_refusals_are_distinct() {
+        let temp = Temp::new();
+        let mut session = temp.start(temp.options(), "save-no-companion").unwrap();
+        assert!(session.save_files(1).unwrap().companion().is_none());
+        session.quit().unwrap();
+        let temp = Temp::new();
+        let mut session = temp.start(temp.options(), "save-refused").unwrap();
+        assert!(session
+            .save_files(1)
+            .unwrap_err()
+            .to_string()
+            .contains("not in free field"));
+        session.quit().unwrap();
+    }
+    #[test]
+    fn card_listing_logs_and_extra_arguments_match_session_contracts() {
+        let temp = Temp::new();
+        let mut options = temp.options();
+        fs::write(&options.disc1, "synthetic").unwrap();
+        fs::write(&options.disc2, "synthetic").unwrap();
+        options.extra_args = vec!["--test-option".into(), "value with spaces".into()];
+        let command = options.command().unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        assert!(args.ends_with(&[OsStr::new("--test-option"), OsStr::new("value with spaces")]));
+        let mut session = temp.start(options, "normal").unwrap();
+        assert!(session.mods_log().unwrap().is_empty());
+        assert!(session.play_log().unwrap().is_empty());
+        for name in ["BASLUS-00662B", "BASLUS-00662A", "unrelated"] {
+            fs::write(session.directory().join("bu00").join(name), "synthetic").unwrap();
+        }
+        let files = session.card_files(CardPort::One).unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .map(|p| p.file_name().unwrap())
+                .collect::<Vec<_>>(),
+            [OsStr::new("BASLUS-00662A"), OsStr::new("BASLUS-00662B")]
+        );
+        assert!(session.card_files(CardPort::Two).unwrap().is_empty());
+        fs::write(
+            session.directory().join("pe_mods.log"),
+            b"first\r\ninvalid \xff\n",
+        )
+        .unwrap();
+        assert_eq!(session.mods_log().unwrap(), ["first", "invalid \u{fffd}"]);
+        fs::write(
+            session.directory().join("pe_play_log.csv"),
+            "frame,event\n1,boot\n",
+        )
+        .unwrap();
+        assert_eq!(session.play_log().unwrap(), ["frame,event", "1,boot"]);
         session.quit().unwrap();
     }
     #[test]

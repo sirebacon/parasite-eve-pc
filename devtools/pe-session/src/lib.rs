@@ -3,6 +3,12 @@ use pe_protocol::{Command, ProtocolError, Reply, Status};
 pub mod battle;
 pub mod image;
 pub mod process;
+pub mod save;
+#[cfg(test)]
+mod save_tests;
+#[cfg(test)]
+mod test_fixtures;
+pub mod transport;
 use std::{
     error::Error,
     fmt,
@@ -15,6 +21,8 @@ use std::{
 
 #[derive(Debug)]
 pub enum SessionError {
+    Save(pe_save::SaveError),
+    Export(pe_save::portable::ExportError),
     Protocol(ProtocolError),
     Io {
         path: PathBuf,
@@ -39,6 +47,8 @@ pub enum SessionError {
 impl fmt::Display for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Save(e) => e.fmt(f),
+            Self::Export(e) => e.fmt(f),
             Self::Protocol(e) => e.fmt(f),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Busy(path) => write!(
@@ -68,6 +78,8 @@ impl fmt::Display for SessionError {
 impl Error for SessionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Save(e) => Some(e),
+            Self::Export(e) => Some(e),
             Self::Protocol(e) => Some(e),
             Self::Io { source, .. } => Some(source),
             _ => None,
@@ -77,6 +89,16 @@ impl Error for SessionError {
 impl From<ProtocolError> for SessionError {
     fn from(e: ProtocolError) -> Self {
         Self::Protocol(e)
+    }
+}
+impl From<pe_save::SaveError> for SessionError {
+    fn from(error: pe_save::SaveError) -> Self {
+        Self::Save(error)
+    }
+}
+impl From<pe_save::portable::ExportError> for SessionError {
+    fn from(error: pe_save::portable::ExportError) -> Self {
+        Self::Export(error)
     }
 }
 fn io_at<T>(path: &Path, result: io::Result<T>) -> Result<T, SessionError> {

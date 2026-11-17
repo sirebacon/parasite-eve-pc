@@ -1,7 +1,7 @@
 # Python-to-Rust Migration TODO
 
 Date: November 16, 2026
-Status: In progress; command/process control, battle helpers and PNG screenshots implemented; broader live acceptance pending
+Status: In progress; core session/battle helpers, screenshots and validated save envelopes/export implemented; broader live acceptance pending
 Goal: Replace the project's first-party Python development and testing tools with maintainable Rust equivalents while preserving their behavior.
 
 ## Scope and inventory
@@ -14,7 +14,7 @@ Goal: Replace the project's first-party Python development and testing tools wit
 
 These counts cover tracked `.py` files in these two checkouts. They exclude third-party submodule contents, generated builds, saved games, disc images, and other project directories such as the Combat Simulation Toolkit. Recount on the target branch before implementation because upstream and PR changes may alter this snapshot.
 
-The conversion target is the Python tooling. The C game runtime and modular in-game debug implementation remain the native integration boundary. The initial `pe-protocol`, `pe-session` and `pe-tools` crates now exist under `pe-headless-debug/devtools/`. Other components and suite commands below remain planned.
+The conversion target is the Python tooling. The C game runtime and modular in-game debug implementation remain the native integration boundary. The `pe-protocol`, `pe-save`, `pe-session` and `pe-tools` crates now exist under `pe-headless-debug/devtools/`. Other components and suite commands below remain planned.
 
 ## Current progress: command/process control, battle helpers and screenshots
 
@@ -33,14 +33,21 @@ at `80dbf1093c3a26e947c948320528a41735f02496`. No migration PR has been publishe
 | Parse command/reply and full RNG snapshot | Implemented; live RNG restore pending | `pe-protocol::{Command, Reply, RngSnapshot}`; all 521 bytes, u32 state/frame, index -1..520 |
 | Provide attached client CLI | Done for this slice | `pe-tools command --control-dir DIR -- COMMAND`; `pe-tools rng-validate SNAPSHOT`; help/version and exit codes |
 | Add automated source checks | Implemented; remote CI pending | `.github/workflows/rust-devtools.yml`: format, Clippy, tests on Windows/Linux/macOS |
-| Source-only validation | Passed locally | 49 Rust tests, earlier Python helper tests and new battle/trace/pixel comparisons; one ignored entry is the subprocess test fixture invoked by the process tests |
+| Source-only validation | Passed locally | 71 Rust tests, earlier Python checks and binary/helper parity; one ignored entry is the subprocess test fixture invoked by the process tests |
 | Port process launch/control JSON/cleanup | Implemented; broader live acceptance pending | `pe-session::process::{LaunchOptions, GameSession}`, `pe-protocol::control`; real boot + 30-frame Python/Rust comparison passed |
 | Port typed battle state/events and helpers | Implemented; live battle/caller cutover pending | All 10 `pedebug/battle.py` helpers map to `pe-session::battle::BattleClient`; typed models in `pe-protocol::battle` |
 | Port screenshot capture | Implemented; pixel parity passed | `pe-session::image::ppm_to_png`, `GameSession::shot`; synthetic and live 320x240 output matches Python RGB pixels |
-| Port save-export helpers and reusable flows | Next | Remaining portions of `pedebug/game.py`, then `pedebug/flows.py` and scenario runners |
+| Port save export, card listing and logs | Implemented; live save acceptance/caller cutover pending | `GameSession::{mods_tail,save_block,save_files,save_to,card_files,mods_log,play_log}` plus extra native arguments |
+| Port generic save envelopes | Implemented; field/provider decoding remains | `pe-save`: game CRC, PEMC records/compatibility window, PEEX identity and checksum layers; 11 Python binary/helper comparison cases passed |
+| Port reusable flows and scenarios | Next | `pedebug/flows.py`, `places.py` and scenario runners |
 
 Use `devtools/README.md` for real commands and the channel concurrency/timeout
 contract. This batch does not close any complete Python-file migration item.
+
+Progress estimate after the first three batches was approximately 2–3% of overall
+effort. This is a rough estimate, not a checklist-derived percentage. Formal
+Python-file retirement is still 0/232 because live acceptance/caller cutover is
+pending. Track implemented capabilities and validation separately from retirement.
 
 ## Completion rules
 
@@ -123,10 +130,11 @@ Acceptance: Rust can boot the same executable, load the same fixture, send valid
 Primary sources: `pedebug/card.py`, `disc.py`, `script.py`, `gametext.py`, `jatext.py`, `font.py` and root inspection/extraction scripts.
 
 - [ ] Define explicit byte order, bounds checks, integer widths and wrapping behavior for binary formats.
-- [ ] Port card decoding/encoding, game CRC, legacy mod blocks, current containers and compatibility windows.
-- [ ] Preserve unknown records and payloads when transforming formats that permit round trips.
-- [ ] Port companion identity/path resolution, outer/internal/section checksum validation and section decoding.
-- [ ] Export and copy a card with all required companion data; validate references before claiming a portable save was created.
+- [x] Port the game CRC and generic card/PEMC/compatibility-window envelopes, including legacy-block discovery; opaque payloads preserved.
+- [ ] Complete base-game field/title decoding, legacy/provider-specific payload decoding and supported field edits from `pedebug/card.py`.
+- [x] Preserve unknown records/payloads byte-for-byte in supported save-bundle copies; a 600-byte unknown record crossing the compatibility window matches Python.
+- [x] Port companion identity/path resolution, outer/internal/section checksum validation and generic section extraction (provider payloads remain opaque).
+- [x] Export/copy cards with required companions after reference/checksum validation; source-only command/process parity verified, live save acceptance pending.
 - [ ] Compare save round trips by persisted record/section payloads while allowing transport generation IDs to change.
 - [ ] Preserve current native refusal expectations for damaged and unsupported containers.
 - [ ] Port read-only CUE/raw-sector/ISO file access, PE.IMG tables, room data and resident data access.
@@ -267,11 +275,11 @@ Source paths below are relative to `pe-headless-harness/`. For each checkbox, re
 
 - [ ] `pedebug/battle.py` — all 10 helpers implemented in `pe-session::battle`; fixture/mock-process parity passed; live battle acceptance and caller cutover pending.
 - [ ] `pedebug/build.py`
-- [ ] `pedebug/card.py`
+- [ ] `pedebug/card.py`: CRC/container/legacy-discovery/window/companion envelopes implemented in `pe-save`; field/provider decoding, full command coverage and cutover pending.
 - [ ] `pedebug/disc.py`
 - [ ] `pedebug/flows.py`
 - [ ] `pedebug/font.py`
-- [ ] `pedebug/game.py`
+- [ ] `pedebug/game.py`: core process, frame/input, screenshot, export, card/log helpers implemented; full flow integration, live fixture acceptance and cutover pending.
 - [ ] `pedebug/gametext.py`
 - [ ] `pedebug/jatext.py`
 - [ ] `pedebug/places.py`
@@ -519,6 +527,48 @@ Source paths below are relative to `pe-headless-debug/`, representing the `paras
 - [ ] `tools/lighting-editor/test_assets.py`
 
 ## Validation and evidence record
+
+### Batch 4: save envelopes, export and remaining session helpers (November 16, 2026)
+
+Owner: Codex. Continued on `feat/rust-debug-tools` from `214d05869`.
+
+- Added `pe-save` for bounded card/container/companion parsing and verified bundle
+  export. The game CRC module is shared with `save-editor/src/crc.rs` without GUI
+  dependencies; CRC32 uses pinned `crc32fast` 1.5.4. CI watches the shared source.
+- PEMC parsing retains unknown IDs/version/payload bytes, validates container and
+  record CRCs, discovers legacy blocks and applies the compatibility-window
+  precedence used by Python. Generic PEEX sections retain opaque provider data
+  while checking name/generation/size, all checksum layers, order and bounds.
+- Added reusable binary builders for synthetic fixtures, plus `PortableSave`
+  read/validate/copy APIs. Exports require new destinations, validate before
+  creation, write companions before cards, and remove only their own new files
+  on ordinary failures. They do not promise crash-atomic publication.
+- Ported `mods_tail`, `save_block`, `save_files`, `save_to`, card listing, logs and
+  extra native arguments. Battle/save clients now share `transport.rs`.
+  Raw blocks remain inspectable; verified exports reject corrupt, unknown or
+  unsupported envelopes and inconsistent/missing companion metadata.
+- Added `pe-tools card-check CARD`, `card-copy CARD NEW_DIRECTORY`, and
+  `save-export --control-dir DIR --out NEW_DIRECTORY [--slot N]`.
+- Passed: 71 Rust tests (14 protocol, 12 save, 33 session, 12 CLI), warnings denied,
+  locked offline build. One ignored entry is solely the subprocess fixture entry.
+  New cases cover every truncated binary prefix, independent CRC failures,
+  unknown records, compatibility-window precedence, bounded companion directories,
+  path/metadata rejection, native refusals over stale output, no-companion cards,
+  cleanup/overwrite refusal, attached/headless export, card/log helpers and arguments.
+- Passed: 11 Python comparison cases. A Rust-built card/companion matched Python
+  byte-for-byte, including a 600-byte unknown record spanning the container's
+  discontiguous physical layout. Python read Rust sections; Rust checked/copied
+  Python bundles without changing either file. Python session export helpers
+  returned the same tail, block and portable file bytes. Empty/legacy/window-tail
+  semantics matched. Corrupt game CRC, foreign format, corrupt companion and
+  missing companion could not produce a reported portable copy.
+- Local ignored evidence: `devtools/target/save-parity-report.json`; the temporary
+  Rust oracle source/binary and synthetic comparison files stay outside commits.
+- Limits: base-game state fields, titles, individual legacy/provider payload
+  meanings and actual native save loading remain unvalidated/unported. Generic
+  structural validity does not establish gameplay/provider correctness. No live
+  user saves were used or modified. Native command readiness, signal cleanup,
+  flows/scenarios, Clippy/MSRV/remote-platform checks and Python cutover remain pending.
 
 ### Batch 3: battle helpers and screenshots (November 16, 2026)
 

@@ -1,5 +1,6 @@
 //! Rust equivalents of pedebug/battle.py for headless and attached sessions.
-use crate::{process::GameSession, DebugControl, SessionError};
+pub use crate::transport::{AttachedTransport, DebugTransport};
+use crate::{process::GameSession, SessionError};
 use pe_protocol::{
     battle::{BattleEvent, BattleState, ModState},
     Command, ProtocolError, Reply, RngSnapshot, Status,
@@ -10,25 +11,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-
-pub trait DebugTransport {
-    /// Return the completed native reply; preserve native refusals as errors.
-    fn execute(&mut self, command: &str) -> Result<Reply, SessionError>;
-}
-impl DebugTransport for &mut GameSession {
-    fn execute(&mut self, command: &str) -> Result<Reply, SessionError> {
-        self.command(command, 1200)
-    }
-}
-pub struct AttachedTransport {
-    control: DebugControl,
-    timeout: Duration,
-}
-impl DebugTransport for AttachedTransport {
-    fn execute(&mut self, command: &str) -> Result<Reply, SessionError> {
-        self.control.ask(command, self.timeout)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stat {
@@ -66,10 +48,7 @@ impl<'a> BattleClient<&'a mut GameSession> {
 impl BattleClient<AttachedTransport> {
     pub fn attached(directory: PathBuf, timeout: Duration) -> Self {
         Self::new(
-            AttachedTransport {
-                control: DebugControl::new(&directory),
-                timeout,
-            },
+            AttachedTransport::new(directory.clone(), timeout),
             directory,
         )
     }

@@ -1,9 +1,9 @@
 name: Rust development tools
 on:
   push:
-    paths: ['devtools/**', '.github/workflows/rust-devtools.yml']
+    paths: ['devtools/**', 'save-editor/src/crc.rs', '.github/workflows/rust-devtools.yml']
   pull_request:
-    paths: ['devtools/**', '.github/workflows/rust-devtools.yml']
+    paths: ['devtools/**', 'save-editor/src/crc.rs', '.github/workflows/rust-devtools.yml']
 jobs:
   test:
     strategy:
