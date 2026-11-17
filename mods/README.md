@@ -9,7 +9,7 @@ cmake --build build-mods
 ```
 
 `PE_MOD_LIST` (CMake cache) picks the mods, by folder name. Default:
-`pe_qol;pe_rebalance;pe_economy;pe_rewards;pe_catalog;pe_shops;pe_collection;pe_wardrobe;pe_stacks;pe_warp;pe_quicksave;pe_cheats` (add `pe_hello` for the example).
+`pe_qol;pe_rebalance;pe_economy;pe_rewards;pe_catalog;pe_shops;pe_collection;pe_wardrobe;pe_stacks;pe_warp;pe_quicksave;pe_cheats;pe_bugrec` (add `pe_hello` for the example).
 
 Two switches, so a modded build is safe to hand out:
 - **Build**: `PE_MODS` off (the default) leaves no mod code in the game at all.
@@ -57,6 +57,7 @@ mods/
   pe_warp/             warp menu to story checkpoints, from the Pathogen Eve port
   pe_quicksave/        10 quick save slots in the game's own save format (F10 / F11 / F12)
   pe_cheats/           god mode, infinite ammo and PE, instant win, all PE powers
+  pe_bugrec/           Bug recorder: the last minutes of play, F8 saves a bug report that replays
   pe_hello/            example mod (not built by default)
 ```
 
@@ -85,6 +86,35 @@ in the free field and kept beside the preferences as quicksave_<slot>.mcd. Loadi
 way Save_LoadCardFileIntoRuntime does, without the card menu's dialogs, then runs the field
 script's room transfer to the saved room: the room starts again as after a loaded save. It holds
 what a save holds, not Aya's place in the room or a fight in progress.
+
+## Bug recorder (pe_bugrec)
+
+For bugs that saves, videos and playtests can't reproduce. While on (F1 > Bug recorder > Record), it
+keeps the last minutes of play in memory (Minutes kept, default 15): once a second a state row and the
+changed bytes of the game's state blocks (the runtime save state, the script variable bank, the game
+state block, Aya's combatant record, the enemy slots, Aya's actor, the frame generator words, the scene
+token and state flags), a whole copy of each block every minute, every controller change, and events
+(rooms, new games, battles, hits, HP loss, PE powers, rewards, inventory commands, item adds / removes /
+uses, steals, Tools and storage moves, main menu choices, script random rolls, dialogue pages, saves and
+loads with their card blocks, and every mod's play log row). F8 (or Save a bug report now) writes
+`bug-reports/<date-time>/` beside the preferences: `recording.jsonl` (one JSON object per line),
+`note.txt` for what happened, the ends of pe_mods.log and pe_play.log, and `session/`.
+
+`session/` is the launch from its start: the settings, mods' settings, quick saves and memory cards as
+they were at launch (`start/`), every controller change since launch (`tape.txt`) and a hash of the
+pointer-free blocks once a second (`hashes.txt`). The session of a launch that never shut down (a crash,
+a killed hang) is kept as `bug-recorder/session-previous`.
+
+  python tools/bugrec/decode.py <report>             timeline, changed bytes named, old -> new
+  python tools/bugrec/decode.py <report> --at V      every block as it was at VBlank V
+  python tools/bugrec/replay.py <report> --exe <game> --disc <Disc 1 cue> [--disc2 <Disc 2 cue>]
+
+replay.py rebuilds the launch's files, runs the game headless with `PE_BUGREC_REPLAY`, and the recorder
+plays the tape back into controller port 1 and compares the hashes: it prints where the replay first
+differs, and writes a recording of the replay at the report's moment. Headless runs record only with
+`PE_BUGREC=1`, `PE_BUGREC_DUMP_AT=<vblank>` or `PE_BUGREC_REPLAY`. Test: `mod-bugrec-replay`
+(PE_TEST_DISC): a new game by a fixed route is recorded, decoded, replayed with every check matching,
+and a tape with one press taken out must diverge.
 
 ## Cheats (pe_cheats)
 

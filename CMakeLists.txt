@@ -644,6 +644,13 @@ if(BUILD_TESTING)
             $<TARGET_FILE:parasite-eve-pc> ${CMAKE_BINARY_DIR}/m273-crash-evidence)
         set_tests_properties(original-game-m273-reported-crash PROPERTIES SKIP_RETURN_CODE 77
             TIMEOUT 240 LABELS "game-assets;gpu;mods")
+        if(PE_MODS AND "pe_bugrec" IN_LIST PE_MOD_LIST)
+            add_test(NAME mod-bugrec-replay COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/bugrec_replay.py
+                $<TARGET_FILE:parasite-eve-pc> ${CMAKE_BINARY_DIR}/bugrec-evidence)
+            set_tests_properties(mod-bugrec-replay PROPERTIES SKIP_RETURN_CODE 77
+                TIMEOUT 300 LABELS "game-assets;mods")
+        endif()
         add_test(NAME lighting-editor-assets COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/tools/lighting-editor/test_assets.py)
         set_tests_properties(lighting-editor-assets PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77 LABELS "tools")
