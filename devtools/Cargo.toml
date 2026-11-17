@@ -12,3 +12,4 @@ publish = false
 pe-protocol = { path = "pe-protocol" }
 pe-session = { path = "pe-session" }
 serde_json = "=1.0.154"
+png = "=0.18.1"

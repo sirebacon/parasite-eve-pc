@@ -1,6 +1,7 @@
 //! Native debug command wire format, independent of process/file transport.
 use std::{error::Error, fmt, str::FromStr};
 
+pub mod battle;
 pub mod control;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

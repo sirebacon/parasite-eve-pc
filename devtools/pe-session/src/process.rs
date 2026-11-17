@@ -82,6 +82,7 @@ pub struct GameSession {
     reader: Option<JoinHandle<()>>,
     state: Option<ControlState>,
     history: VecDeque<ControlState>,
+    shots: u64,
     response_timeout: Duration,
     shutdown_timeout: Duration,
     closed: bool,
@@ -192,6 +193,7 @@ impl GameSession {
             reader: Some(reader),
             state: None,
             history: VecDeque::new(),
+            shots: 0,
             response_timeout: options.response_timeout,
             shutdown_timeout: options.shutdown_timeout,
             closed: false,
@@ -213,6 +215,26 @@ impl GameSession {
     }
     pub fn frame_ppm(&self) -> PathBuf {
         self.directory.join("frame.ppm")
+    }
+    pub fn shot(&mut self, name: &str) -> Result<PathBuf, SessionError> {
+        self.shots = self
+            .shots
+            .checked_add(1)
+            .ok_or_else(|| self.failure("screenshot counter overflow"))?;
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || "-_.".contains(c) {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .take(60)
+            .collect();
+        let path = self.directory.join(format!("{:03}-{safe}.png", self.shots));
+        crate::image::ppm_to_png(&self.frame_ppm(), &path)?;
+        Ok(path)
     }
     fn failure(&self, message: impl Into<String>) -> SessionError {
         SessionError::Process {
@@ -327,8 +349,12 @@ impl GameSession {
         let mut waited = 0;
         while !predicate(self.state()) {
             if waited >= timeout {
+                let screenshot = match self.shot("timeout-wait") {
+                    Ok(path) => format!("screenshot {}", path.display()),
+                    Err(e) => format!("screenshot unavailable: {e}"),
+                };
                 return Err(self.failure(format!(
-                    "wait timed out after {timeout} frames: {}",
+                    "wait timed out after {timeout} frames: {}; {screenshot}",
                     self.state().short()
                 )));
             }
@@ -588,10 +614,16 @@ mod tests {
             _ => {}
         }
         let state = |frame: u32, pad: u16, event: &str| {
+            fs::write(
+                "frame.ppm",
+                [b"P6\n2 1\n255\n".as_slice(), &[10, 13, 32, 0, 128, 255]].concat(),
+            )
+            .unwrap();
             println!("\n{{\"event\":\"{event}\",\"vblanks\":{frame},\"scene\":3,\"flags\":0,\"game_flags\":0,\"pad\":{pad},\"menu\":null}}");
             std::io::stdout().flush().unwrap();
         };
         let mut frame = 1;
+        let mut rng = format!("4294967295 7 -1 {}", "a5".repeat(521));
         state(frame, 0, "control");
         let mut received = File::create("received.txt").unwrap();
         for line in std::io::stdin().lock().lines() {
@@ -622,7 +654,37 @@ mod tests {
                     .create(true)
                     .open("ctl/out")
                     .unwrap();
-                writeln!(out, "ok {} 123", command.split_whitespace().next().unwrap()).unwrap();
+                let verb = command.split_whitespace().next().unwrap();
+                if mode == "battle" {
+                    let detail = match verb {
+                        "battle-state" => {
+                            include_str!("../../pe-protocol/fixtures/battle-state.json")
+                                .trim()
+                                .to_owned()
+                        }
+                        "mod-state" => include_str!("../../pe-protocol/fixtures/mod-state.json")
+                            .trim()
+                            .to_owned(),
+                        "rng-get" => rng.clone(),
+                        "rng-set" => {
+                            rng = command.trim().strip_prefix("rng-set ").unwrap().to_owned();
+                            rng.clone()
+                        }
+                        "trace" => {
+                            fs::write(
+                                "ctl/battle.jsonl",
+                                include_str!("../../pe-protocol/fixtures/battle-events.jsonl"),
+                            )
+                            .unwrap();
+                            command.trim().strip_prefix("trace ").unwrap().to_owned()
+                        }
+                        "ini-set" => "Manage mods/All mods=0 restart_required=1".into(),
+                        _ => "123".into(),
+                    };
+                    writeln!(out, "ok {verb} {detail}").unwrap();
+                } else {
+                    writeln!(out, "ok {verb} 123").unwrap();
+                }
             }
             state(
                 frame,
@@ -671,6 +733,46 @@ mod tests {
         assert_eq!(fs::read_to_string(session.directory().join("received.txt")).unwrap(), "advance 10 16384\nadvance 20 0\nadvance 10 0\nadvance 10 0\nadvance 10 0\nadvance 10 0\nquit\n");
     }
     #[test]
+    fn battle_helpers_work_through_process_and_real_channel_files() {
+        use crate::battle::{BattleClient, Stat};
+        use pe_protocol::battle::BattleEventKind;
+        let temp = Temp::new();
+        let mut session = temp.start(temp.options(), "battle").unwrap();
+        {
+            let mut battle = BattleClient::headless(&mut session);
+            assert_eq!(battle.state().unwrap().enemies[0].actor.0, 7);
+            let original = battle.rng_get().unwrap();
+            let mut changed = original.clone();
+            changed.state = 123;
+            changed.table[520] = 0xff;
+            battle.rng_set(&changed).unwrap();
+            assert_eq!(battle.rng_get().unwrap(), changed);
+            battle.rng_set(&original).unwrap();
+            assert_eq!(battle.rng_get().unwrap(), original);
+            battle.trace(true).unwrap();
+            assert!(matches!(
+                battle.events().unwrap()[1].kind,
+                BattleEventKind::HpLossAdmitted { .. }
+            ));
+            battle.trace(false).unwrap();
+            battle.give(255).unwrap();
+            battle.equip(0).unwrap();
+            battle.set_stat(Stat::Bp, 99999).unwrap();
+            assert!(!battle.mod_state("example").unwrap().running);
+            assert!(
+                battle
+                    .ini_set("Manage mods/All mods", 0)
+                    .unwrap()
+                    .restart_required
+            );
+        }
+        session.quit().unwrap();
+        let sent = fs::read_to_string(session.directory().join("received.txt")).unwrap();
+        // Thirteen commands each advance exactly once, plus explicit shutdown.
+        assert_eq!(sent.lines().filter(|s| *s == "advance 10 0").count(), 13);
+        assert!(session.child.try_wait().unwrap().is_some());
+    }
+    #[test]
     fn copies_cards_and_companions_without_changing_originals() {
         let temp = Temp::new();
         let source = temp.0.join("source");
@@ -705,6 +807,22 @@ mod tests {
             fs::read(session.directory().join("lang/example.pelang")).unwrap(),
             b"synthetic"
         );
+        session.quit().unwrap();
+    }
+    #[test]
+    fn screenshots_are_numbered_sanitized_and_missing_frames_fail() {
+        let temp = Temp::new();
+        let mut session = temp.start(temp.options(), "normal").unwrap();
+        let shot = session.shot("../battle:fail").unwrap();
+        assert_eq!(shot.file_name().unwrap(), "001-..-battle-fail.png");
+        assert!(fs::read(shot).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(
+            session.shot("again").unwrap().file_name().unwrap(),
+            "002-again.png"
+        );
+        fs::remove_file(session.frame_ppm()).unwrap();
+        assert!(session.shot("missing").is_err());
+        assert!(!session.directory().join("003-missing.png").exists());
         session.quit().unwrap();
     }
     #[test]
@@ -813,6 +931,7 @@ mod tests {
         let mut session = temp.start(temp.options(), "normal").unwrap();
         assert!(session.wait_until(|_| false, 11, 10, 0).is_err());
         assert_eq!(session.state().vblanks, 12);
+        assert!(session.directory().join("001-timeout-wait.png").is_file());
         for _ in 0..2001 {
             session.advance(1, 0).unwrap();
         }

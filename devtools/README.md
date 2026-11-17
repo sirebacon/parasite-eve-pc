@@ -16,7 +16,8 @@ cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 ```
 
 JSON parsing uses pinned `serde_json` 1.0.154 (MIT OR Apache-2.0) with dependencies
-recorded in `Cargo.lock`. On a fresh machine first run `cargo fetch --locked`, then
+recorded in `Cargo.lock`. PNG encoding uses pinned pure-Rust `png` 0.18.1
+(MIT OR Apache-2.0). On a fresh machine first run `cargo fetch --locked`, then
 the offline commands above. The declared
 minimum Rust version is 1.74; current stable is the CI target. CI checks Windows,
 Linux and macOS. Local validation initially uses Windows gnullvm; on this machine
@@ -54,7 +55,8 @@ cargo run --locked --offline -p pe-tools -- run --exe 'D:\build\parasite-eve-pc.
 The parent of `--run-dir` must exist; the run directory itself must be new. Existing
 directories are refused and never deleted. `--exe` also accepts the `PE_DEBUG_EXE`
 environment default. Options include `--button cross` with `--advance`,
-`--command 'room'`, `--frame-limit N`, and `--response-timeout-ms N` (default 60000).
+`--command 'room'`, `--frame-limit N`, `--shot 'boot'`, and
+`--response-timeout-ms N` (default 60000).
 The CLI prints initial/final control JSON, plus an optional native command reply,
 then quits. Debug commands require the native polling hook to be running; do not
 assume a boot-time `ping` proves readiness. The current local build also timed out
@@ -70,17 +72,56 @@ and bounds stdout lines (1 MiB), queued lines (64), and wall-clock response time
 Library operations include `advance`, `press`, `wait_until`, `wait_stable`,
 `command`, and `quit`. `Drop` attempts graceful shutdown, then kills and reaps the
 child after a deadline; read/write failures during advance terminate it immediately.
-Raw `frame.ppm` is available, but PNG screenshots and portable save export remain
-pending. Ctrl+C/signal-specific process cleanup is not implemented yet. Generic
+`shot(label)` saves numbered PNG evidence from `frame.ppm`; a failed `wait_until`
+also attempts a screenshot without masking its primary timeout error. Portable
+save export and Ctrl+C/signal-specific process cleanup are not implemented yet. Generic
 waits cap the final step at the remaining frame budget, unlike Python's overshoot.
+
+## Battle helpers and trace inspection
+
+`pe-session::battle::BattleClient::headless(&mut session)` implements every helper
+from Python's `pedebug/battle.py`. `BattleClient::attached(control_dir, timeout)`
+uses the same interface for an already advancing game.
+
+| Python helper | Rust method / result |
+|---|---|
+| `state` | `state()`: typed `BattleState`, with the original JSON in `raw` |
+| `rng_get` / `rng_set` | Complete typed `RngSnapshot`; set validates before sending |
+| `trace` / `events` | Enable/disable tracing; parse `battle.jsonl` into typed events |
+| `give` / `equip` | Uppercase hex item IDs and decimal bag slots; native errors retained |
+| `set_stat` | `Stat::{Level, Hp, PeRaw, Bp}` with native decimal values |
+| `mod_state` | Typed registered mod rows, including inactive values |
+| `ini_set` | Original reply plus `restart_required`; no automatic mod restart |
+
+Snapshots distinguish `TargetListIndex` from `FieldActorIndex`; a field actor
+number is not a battle target index. PE values retain their raw 16.16 integers.
+Trace events separately represent admissions, commits, observations, reward offers
+and steal transfers. Unknown event names and all extra JSON fields remain in `raw`.
+Malformed known fields and incomplete/corrupt trace lines fail with field/line
+context. A missing trace file returns an empty list, matching Python's helper.
+
+The source-only fixtures under `pe-protocol/fixtures/` contain synthetic data.
+For offline inspection:
+
+```powershell
+cargo run --locked --offline -p pe-tools -- battle-validate pe-protocol/fixtures/battle-state.json
+cargo run --locked --offline -p pe-tools -- events pe-protocol/fixtures/battle-events.jsonl
+cargo run --locked --offline -p pe-tools -- ppm-to-png 'D:\runs\new-run\frame.ppm' 'D:\runs\new-run\frame.png'
+```
+
+PNG conversion supports binary P6 RGB with max value 255, including comments and
+common whitespace/CRLF headers. It checks dimensions, the exact raster length and
+a 64-megapixel limit. Existing PNG output files are refused. Missing frames fail
+explicitly rather than returning a path to a nonexistent screenshot. Pixel content
+matches the Python converter; compressed PNG bytes need not match.
 
 ## Components and contracts
 
 | Crate | Implemented |
 |---|---|
-| `pe-protocol` | Commands/replies, typed control boundaries and native pad bits, complete RNG snapshots, preserved JSON extensions |
-| `pe-session` | File channel plus isolated process launch, card/companion copies, bounded stdout/history, input/frame waits and shutdown |
-| `pe-tools` | Attached command CLI, isolated `run`, help/version, `rng-validate` round trips |
+| `pe-protocol` | Commands/replies, control/battle/mod JSON, distinct trace event types, native pad bits, complete RNG snapshots |
+| `pe-session` | File/process transport, battle helpers, PNG screenshots, card/companion copies, input/frame waits and shutdown |
+| `pe-tools` | Attached command CLI, isolated `run`, battle/trace validation, PNG conversion, RNG validation |
 
 `rng-validate "STATE FRAME INDEX HEX1042"` prints a normalized snapshot without
 changing a game. It retains unsigned 32-bit generator/frame values, index -1..520
@@ -93,6 +134,6 @@ command intact because it may still execute. After a crashed client, inspect the
 game/channel before manually removing a stale `client.lock`; retrying mutations
 can apply them twice. Use a fresh control directory for a new game session.
 
-Battle JSON payloads are still preserved as text. Typed battle state/events,
-save-format/companion validation, screenshot conversion and scenario runners remain
-on the migration checklist. No Python entry points have been retired.
+Save-format/companion validation, save export, reusable menu/field/battle flows and
+scenario runners remain on the migration checklist. Live battle/RNG acceptance and
+Python caller cutover are still pending; no Python entry points have been retired.

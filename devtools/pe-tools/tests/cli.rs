@@ -52,6 +52,51 @@ fn rng_cli_roundtrip() {
     );
 }
 
+#[test]
+fn offline_battle_and_trace_commands_preserve_json_extensions() {
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pe-protocol/fixtures");
+    let state_path = fixture_root.join("battle-state.json");
+    let state = cli(&["battle-validate", state_path.to_str().unwrap()]);
+    assert!(state.status.success());
+    let state = String::from_utf8(state.stdout).unwrap();
+    assert!(state.contains("\"future\":\"preserved\""));
+    let events_path = fixture_root.join("battle-events.jsonl");
+    let events = cli(&["events", events_path.to_str().unwrap()]);
+    assert!(events.status.success());
+    let events = String::from_utf8(events.stdout).unwrap();
+    assert_eq!(events.lines().count(), 9);
+    assert!(events.contains("future_event"));
+}
+
+#[test]
+fn offline_battle_commands_reject_corruption_with_nonzero_status() {
+    let temp = Temp::new("corrupt");
+    let path = temp.0.join("bad.jsonl");
+    fs::write(&path, "{broken").unwrap();
+    for command in ["battle-validate", "events"] {
+        let out = cli(&[command, path.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+    }
+}
+#[test]
+fn screenshot_cli_writes_png_and_refuses_to_overwrite_it() {
+    let temp = Temp::new("screenshot");
+    let ppm = temp.0.join("frame.ppm");
+    let png = temp.0.join("frame.png");
+    fs::write(
+        &ppm,
+        [b"P6\n2 1\n255\n".as_slice(), &[10, 13, 32, 0, 128, 255]].concat(),
+    )
+    .unwrap();
+    let args = ["ppm-to-png", ppm.to_str().unwrap(), png.to_str().unwrap()];
+    assert!(cli(&args).status.success());
+    let before = fs::read(&png).unwrap();
+    assert!(before.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(cli(&args).status.code(), Some(1));
+    assert_eq!(fs::read(&png).unwrap(), before);
+}
+
 struct Temp(PathBuf);
 impl Temp {
     fn new(label: &str) -> Self {

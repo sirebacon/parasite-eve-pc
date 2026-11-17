@@ -1,5 +1,7 @@
 //! File channel for an existing game. Headless callers supply frame advancement.
 use pe_protocol::{Command, ProtocolError, Reply, Status};
+pub mod battle;
+pub mod image;
 pub mod process;
 use std::{
     error::Error,

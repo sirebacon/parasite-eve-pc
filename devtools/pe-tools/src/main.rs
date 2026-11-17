@@ -11,6 +11,9 @@ Rust tools for Parasite Eve development
 Usage:
   pe-tools command --control-dir DIR [--timeout-ms 30000] -- COMMAND [ARG ...]
   pe-tools rng-validate \"STATE FRAME INDEX HEX1042\"
+  pe-tools battle-validate SNAPSHOT.json
+  pe-tools events BATTLE.jsonl
+  pe-tools ppm-to-png INPUT.ppm OUTPUT.png
   pe-tools run --exe EXE --disc CUE --disc2 CUE --run-dir NEW_DIR [OPTIONS]
   pe-tools --help
   pe-tools --version
@@ -19,7 +22,7 @@ The command client attaches to an already running game with PE_DEBUG_CONTROL=DIR
 PE_DEBUG_CONTROL is also the default for --control-dir. Prints the original reply.
 The attached command client needs an advancing game.
 Run options: --advance FRAMES --button NAME --command TEXT --frame-limit FRAMES
-             --response-timeout-ms MS
+             --response-timeout-ms MS --shot LABEL
 --exe defaults to PE_DEBUG_EXE. run launches an isolated headless session, prints
 initial/final control JSON and an optional debug reply, then quits the process.
 Exit 0: success; 1: native/transport failure; 2: invalid arguments or snapshot.
@@ -44,6 +47,32 @@ fn run(args: Vec<String>) -> Result<(), (u8, String)> {
             Ok(())
         }
         Some("run") => run_game(&args[1..]),
+        Some("ppm-to-png") if args.len() == 3 => {
+            pe_session::image::ppm_to_png(
+                std::path::Path::new(&args[1]),
+                std::path::Path::new(&args[2]),
+            )
+            .map_err(|e| (1, e.to_string()))?;
+            println!("{}", args[2]);
+            Ok(())
+        }
+        Some("battle-validate") if args.len() == 2 => {
+            let text =
+                std::fs::read_to_string(&args[1]).map_err(|e| (1, format!("{}: {e}", args[1])))?;
+            let state: pe_protocol::battle::BattleState = text
+                .parse()
+                .map_err(|e: pe_protocol::ProtocolError| (1, e.to_string()))?;
+            println!("{}", state.raw);
+            Ok(())
+        }
+        Some("events") if args.len() == 2 => {
+            let events = pe_session::battle::read_events(std::path::Path::new(&args[1]))
+                .map_err(|e| (1, e.to_string()))?;
+            for event in events {
+                println!("{}", event.raw);
+            }
+            Ok(())
+        }
         Some("command") => {
             let mut directory = env::var_os("PE_DEBUG_CONTROL").map(PathBuf::from);
             let mut timeout = 30_000u64;
@@ -87,6 +116,7 @@ fn run_game(args: &[String]) -> Result<(), (u8, String)> {
     let mut advance = None;
     let mut button = 0;
     let mut debug_command = None;
+    let mut shot = None;
     let mut frame_limit = 2_000_000;
     let mut response_timeout = 60_000;
     let mut i = 0;
@@ -115,6 +145,7 @@ fn run_game(args: &[String]) -> Result<(), (u8, String)> {
                 pe_protocol::Command::new(value).map_err(|e| (2, e.to_string()))?;
                 debug_command = Some(value.clone());
             }
+            "--shot" => shot = Some(value.clone()),
             "--frame-limit" => {
                 frame_limit = value
                     .parse::<u64>()
@@ -154,6 +185,12 @@ fn run_game(args: &[String]) -> Result<(), (u8, String)> {
         let reply = session.command(&command, 1200).map_err(runtime)?;
         println!("{}", reply.line);
         println!("{}", session.state().raw);
+    }
+    if let Some(label) = shot {
+        eprintln!(
+            "Screenshot: {}",
+            session.shot(&label).map_err(runtime)?.display()
+        );
     }
     session.quit().map_err(runtime)
 }

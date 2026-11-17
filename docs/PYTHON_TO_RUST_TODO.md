@@ -1,7 +1,7 @@
 # Python-to-Rust Migration TODO
 
 Date: November 16, 2026
-Status: In progress; protocol, file transport and process-control batches implemented; limited live launch parity verified
+Status: In progress; command/process control, battle helpers and PNG screenshots implemented; broader live acceptance pending
 Goal: Replace the project's first-party Python development and testing tools with maintainable Rust equivalents while preserving their behavior.
 
 ## Scope and inventory
@@ -16,7 +16,7 @@ These counts cover tracked `.py` files in these two checkouts. They exclude thir
 
 The conversion target is the Python tooling. The C game runtime and modular in-game debug implementation remain the native integration boundary. The initial `pe-protocol`, `pe-session` and `pe-tools` crates now exist under `pe-headless-debug/devtools/`. Other components and suite commands below remain planned.
 
-## Current progress: command transport and process control
+## Current progress: command/process control, battle helpers and screenshots
 
 Owner: Codex. Started November 16, 2026. Rust implementation lives in the game
 repository's `devtools/` workspace. Keep the companion Python harness as the
@@ -33,10 +33,11 @@ at `80dbf1093c3a26e947c948320528a41735f02496`. No migration PR has been publishe
 | Parse command/reply and full RNG snapshot | Implemented; live RNG restore pending | `pe-protocol::{Command, Reply, RngSnapshot}`; all 521 bytes, u32 state/frame, index -1..520 |
 | Provide attached client CLI | Done for this slice | `pe-tools command --control-dir DIR -- COMMAND`; `pe-tools rng-validate SNAPSHOT`; help/version and exit codes |
 | Add automated source checks | Implemented; remote CI pending | `.github/workflows/rust-devtools.yml`: format, Clippy, tests on Windows/Linux/macOS |
-| Source-only validation | Passed locally | 31 Rust tests, 3 existing Python helper tests, 4 Python/Rust mock-channel comparisons; one ignored entry is the subprocess test fixture invoked by the process tests |
+| Source-only validation | Passed locally | 49 Rust tests, earlier Python helper tests and new battle/trace/pixel comparisons; one ignored entry is the subprocess test fixture invoked by the process tests |
 | Port process launch/control JSON/cleanup | Implemented; broader live acceptance pending | `pe-session::process::{LaunchOptions, GameSession}`, `pe-protocol::control`; real boot + 30-frame Python/Rust comparison passed |
-| Port typed battle state/events and helpers | Pending | Remaining portions of `pedebug/battle.py`; JSON currently preserved verbatim |
-| Port screenshot/save-export helpers and reusable flows | Next | Remaining portions of `pedebug/game.py`, then `pedebug/flows.py` and scenario runners |
+| Port typed battle state/events and helpers | Implemented; live battle/caller cutover pending | All 10 `pedebug/battle.py` helpers map to `pe-session::battle::BattleClient`; typed models in `pe-protocol::battle` |
+| Port screenshot capture | Implemented; pixel parity passed | `pe-session::image::ppm_to_png`, `GameSession::shot`; synthetic and live 320x240 output matches Python RGB pixels |
+| Port save-export helpers and reusable flows | Next | Remaining portions of `pedebug/game.py`, then `pedebug/flows.py` and scenario runners |
 
 Use `devtools/README.md` for real commands and the channel concurrency/timeout
 contract. This batch does not close any complete Python-file migration item.
@@ -105,15 +106,15 @@ Primary sources: `pedebug/game.py`, `pedebug/build.py`, `pedebug/battle.py`.
 - [ ] Add explicit Ctrl+C/signal interruption handling and validate child cleanup on supported platforms.
 - [x] Match native button masks and hold/release frame scheduling exactly (mock-process checks).
 - [x] Port advance, press, wait, wait-until-stable and readable state summaries.
-- [ ] Port PNG screenshot capture; the native raw PPM path is available now.
+- [x] Port PNG screenshot capture and timeout evidence; synthetic and live-frame pixel parity verified against Python.
 - [x] Write `cmd.tmp`, rename atomically to `cmd`, and consume replies from `out` without matching a command-name prefix accidentally (source-only checks; live command readiness pending).
 - [x] Reject empty or multi-line command requests and preserve actionable `err` responses (`pe-protocol`, `pe-session`; source-only tests).
 - [ ] Support all currently implemented debug commands, including room/actor/script queries, positioning, variables, save export, setup, settings, RNG and tracing.
-- [ ] Preserve the distinction between native target-list indexes and field actor indexes.
-- [ ] Parse battle snapshots and JSONL event streams with explicit types and forward-compatible handling of added fields.
+- [x] Preserve the distinction between native target-list indexes and field actor indexes with separate Rust types.
+- [x] Parse battle snapshots and JSONL event streams with explicit types and forward-compatible handling of added fields (source-only parity; live battle suites pending).
 - [ ] Preserve full native RNG snapshots: generator state, frame seed, cursor and all 521 state bytes. Test restoration without consuming a random roll.
-- [ ] Keep HP-loss admissions, committed enemy HP changes, observed player HP changes, reward offers and actual steal results distinct.
-- [ ] Respect the reported restart requirement for stored mod enable/disable settings.
+- [x] Keep HP-loss admissions, committed enemy HP changes, observed player HP changes, reward offers and actual steal results distinct in typed trace events.
+- [x] Respect the reported restart requirement for stored mod enable/disable settings; return it to callers without hot-starting mods.
 
 Acceptance: Rust can boot the same executable, load the same fixture, send valid/invalid commands, reproduce the same frame/input schedule and produce equivalent structured observations.
 
@@ -264,7 +265,7 @@ Source paths below are relative to `pe-headless-harness/`. For each checkbox, re
 
 ### Reusable harness modules (11)
 
-- [ ] `pedebug/battle.py`
+- [ ] `pedebug/battle.py` — all 10 helpers implemented in `pe-session::battle`; fixture/mock-process parity passed; live battle acceptance and caller cutover pending.
 - [ ] `pedebug/build.py`
 - [ ] `pedebug/card.py`
 - [ ] `pedebug/disc.py`
@@ -518,6 +519,53 @@ Source paths below are relative to `pe-headless-debug/`, representing the `paras
 - [ ] `tools/lighting-editor/test_assets.py`
 
 ## Validation and evidence record
+
+### Batch 3: battle helpers and screenshots (November 16, 2026)
+
+Owner: Codex. Continued on `feat/rust-debug-tools` from `abc698223`.
+
+- Added typed battle/player/weapon/enemy and mod-row models in
+  `pe-protocol/src/battle.rs`. Native numeric widths and signedness are checked;
+  negative enemy HP, raw PE, signed weapon bonuses and positions are retained.
+  Separate target-list and field-actor index types prevent accidental interchange.
+  The complete original JSON remains available, including unknown fields/events.
+- `pe-session/src/battle.rs` implements every Python battle helper: state, RNG
+  get/set, tracing/events, item grants, equipment, all four stat names, mod rows
+  and registered settings/restart results. It supports the headless process and
+  attached file channel through the same interface. Native refusals are preserved.
+- Events distinguish enemy HP commits, admitted incoming loss, observed player HP,
+  reward offers, actual steal transfer results, resources, actions and spells.
+  Missing trace files produce empty lists; malformed/incomplete lines are explicit
+  errors with path/line context. Unknown events are preserved without reinterpretation.
+- Added `GameSession::shot`, automatic wait-timeout evidence, and P6-to-PNG support
+  in `pe-session/src/image.rs`. New CLI operations: `battle-validate FILE`,
+  `events FILE`, `ppm-to-png INPUT OUTPUT`, and `run --shot LABEL`.
+- Screenshot conversion uses pinned pure-Rust `png` 0.18.1 (MIT OR Apache-2.0),
+  with dependencies locked. Unlike Python, missing frames fail explicitly and
+  existing PNG files are refused. Native P6 pixel behavior is preserved; extra
+  header/size checks and a 64-megapixel limit reject unsupported/corrupt input.
+- Passed: 49 Rust tests (14 protocol, 27 session/image, 8 CLI), warnings denied,
+  offline locked workspace build. The sole ignored entry is the subprocess fixture
+  invoked by process tests, not a skipped asset-dependent scenario.
+- Python comparison: all 15 helper command exchanges in the shared contract
+  matched spelling, parameter formatting, refusal handling and restart behavior.
+  Rust CLI snapshot JSON and 9 synthetic trace events matched Python's raw JSON;
+  both rejected a corrupt final trace line. One existing prebuilt C-test resource
+  event also matched. The Rust process test exercised all helper families through
+  actual `cmd`/`out` files, including full RNG restore/readback in a mock process.
+  These are not live battle/RNG restoration acceptance results.
+- Pixel comparison: Rust and Python PNGs decoded to identical dimensions, RGB
+  bytes and bit depth for synthetic input and a real 320x240 local-game frame.
+  PNG chunk CRCs were validated. A fresh live Rust session launched the same
+  local executable identified in Batch 2, advanced VBlank 1 to 31, saved
+  `001-boot.png`, and quit with exit 0. No save fixture or gameplay was validated.
+- Local ignored reports: `devtools/target/battle-parity-report.json` and
+  `devtools/target/screenshot-parity-report.json`; live output is under
+  `devtools/target/live-screenshot-smoke-01/`. No game images, native dumps or
+  generated reports are included in source commits. The committed fixtures are synthetic.
+- Remaining: live native command readiness/battle acceptance, save export/format
+  validation, reusable flows, scenario suites, signal handling and caller cutover.
+  Clippy is still unavailable locally; remote CI and minimum-version checks remain pending.
 
 ### Batch 2 local evidence (November 16, 2026)
 

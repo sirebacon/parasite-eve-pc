@@ -1,0 +1,9 @@
+{"event":"enemy_hp_commit","frame":1,"battle_frame":-1,"type":2,"sub":1,"before":10,"after":-5,"loss":15,"reaction":3,"critical":true}
+{"event":"hp_loss_admitted","frame":2,"battle_frame":1,"before":50,"loss":20,"source":3}
+{"event":"player_hp_changed","frame":2,"before":50,"after":35}
+{"event":"rewards_offered","frame":3,"battle_frame":2,"exp":99,"drops":[{"id":255,"extra":1}]}
+{"event":"steal","frame":4,"battle_frame":3,"item":255,"success":false}
+{"event":"resources","frame":5,"battle":true,"bp":99999,"exp":123,"level":7}
+{"event":"player_action","frame":6,"battle_frame":4}
+{"event":"spell","frame":7,"battle_frame":5}
+{"event":"future_event","frame":8,"future":123}
