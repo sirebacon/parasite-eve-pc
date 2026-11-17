@@ -1,0 +1,23 @@
+name: Rust development tools
+on:
+  push:
+    paths: ['devtools/**', '.github/workflows/rust-devtools.yml']
+  pull_request:
+    paths: ['devtools/**', '.github/workflows/rust-devtools.yml']
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: devtools
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust with checks
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: cargo +stable fetch --locked
+      - run: cargo +stable fmt --all -- --check
+      - run: cargo +stable clippy --workspace --all-targets --locked --offline -- -D warnings
+      - run: cargo +stable test --workspace --locked --offline

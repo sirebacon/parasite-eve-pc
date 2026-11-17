@@ -81,3 +81,4 @@ test_regex*.py
 /test-debug-control.exe
 /prototypes/bp-ui/userdata/
 /prototypes/bp-ui/preview.html
+/devtools/target/

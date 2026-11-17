@@ -1,0 +1,14 @@
+[workspace]
+members = ["pe-protocol", "pe-session", "pe-tools"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+publish = false
+
+[workspace.dependencies]
+pe-protocol = { path = "pe-protocol" }
+pe-session = { path = "pe-session" }
+serde_json = "=1.0.154"
