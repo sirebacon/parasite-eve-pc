@@ -1999,7 +1999,7 @@
   "auxiliaryFiles": [
     {
       "path": "support/application-allocation-log.c",
-      "sha256": "30ff7c51833d5412048049e529d5d1f68612d5d7bf33eb2fabc4fb9d557a1eef",
+      "sha256": "a5d7c376610d6974c80c6268784e0f2798233b33618777509d0d25db70dee309",
       "bytes": 3595
     },
     {
@@ -4763,15 +4763,15 @@
     },
     {
       "path": "mods/pe_src_re3/pe_src_re3.c",
-      "sha256": "5baf3887346a6f8d404e50494068b93bd865deb186a05141a7b4968496af9357"
+      "sha256": "76677f1a2f2134abdb9459a7846176c0a7653eba2e5867425e4a62813c153e8e"
     },
     {
       "path": "mods/pe_src_re3/pe_src_re3.h",
-      "sha256": "f7d812b140c354a049f87597749ca488137c7f76ccfce0fdea5818d8512caeab"
+      "sha256": "2e3ff89422a0709d3d53188edf6dbf07ac1b82abc2d9fd4d0eae26a4b901f4a3"
     },
     {
       "path": "mods/pe_src_re3/pe_src_re3_pld.c",
-      "sha256": "a5305a5724d95e1029b4be6ba3b48522a8db32de93d3f11794d4fa8e59cf3010"
+      "sha256": "71eb309c9ec89f0c8f7f653946c54271773daebdadfe654cb7670e1f05d7431c"
     },
     {
       "path": "mods/pe_src_re3/pe_src_re3_music.c",
@@ -4815,11 +4815,11 @@
     },
     {
       "path": "mods/pe_src_re3/pe_src_re3_tones.c",
-      "sha256": "718f04b86409b93b043c11f3ff5064536279a42fb145ee70296867f3765fb210"
+      "sha256": "82cb7825303b6061d4e70040dd19cd9774eebf1096baa5b8c37828291d748e4f"
     },
     {
       "path": "mods/pe_src_re3/pe_src_re3_enemies.c",
-      "sha256": "b7f50e845814a867f4f17ab9bafe853394c33d6ba0a5934f0293ebf63a7da77c"
+      "sha256": "2df17ad290b839340a84e46df8495850e9384a7f20868789abcfc9c8a92e8856"
     },
     {
       "path": "mods/host/import/pe_imp_room.c",
@@ -4835,7 +4835,7 @@
     },
     {
       "path": "mods/host/import/pe_imp_rofs.c",
-      "sha256": "0ad5eb6d6dc0baa47154a65f229a1af48bf4959cfbb85e63327c0dee51a8e83f"
+      "sha256": "ffdc060a19c38fe2d97f79f0921ac91c61a9531302d969102148c8fde74a33c8"
     },
     {
       "path": "mods/host/import/pe_imp_rofs.h",
@@ -4843,7 +4843,7 @@
     },
     {
       "path": "mods/host/import/pe_imp_enemy.h",
-      "sha256": "9dbbb341eade20e78518a3ea48d1e369e5a732e0d01e62d3389f97a9fa9c3163"
+      "sha256": "b70609a5a3c65b659ba01b0c15e88d62d247834ff2b6055d99b4991a6db63cc4"
     },
     {
       "path": "mods/host/import/pe_imp_rdt.c",
