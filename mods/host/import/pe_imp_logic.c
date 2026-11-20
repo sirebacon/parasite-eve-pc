@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "pe_imp_logic.h"
+#include "pe_imp_room.h"
 
 #define HEADER 28u                                   /* "RML1", version, game, player, stage, room, sections */
 
@@ -212,6 +213,13 @@ int pe_imp_logic_pickup(const PeImpRoomLogic *l, uint32_t i, PeImpPickup *k) {
     k->item = (uint16_t)get16(p + 22), k->count = (uint16_t)get16(p + 24), k->flag = (uint16_t)get16(p + 26);
     k->model = p[28], k->action = p[29];
     k->at = origin(l, PE_IMP_LOGIC_PICK, i);
+    if (l->game == PE_IMP_RE1 && !k->flag && k->at) {
+        /* Older RE1 imports left PICK flags at zero. The original instruction is still in RDT0. */
+        uint32_t bytes = 0;
+        const uint8_t *rdt = pe_imp_logic_section(l, PE_IMP_LOGIC_RDT0, NULL, &bytes);
+        if (rdt && k->at < bytes && bytes - k->at >= 26 && rdt[k->at] == 0x18)
+            k->flag = rdt[k->at + 22];
+    }
     return 0;
 }
 int pe_imp_logic_camera_zone(const PeImpRoomLogic *l, uint32_t i, PeImpCameraZone *c) {

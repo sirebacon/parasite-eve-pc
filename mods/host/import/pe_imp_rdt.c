@@ -216,7 +216,7 @@ static void visit1(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, ui
             PeImpRdtItem *it = &r->item[r->items];
             memset(it, 0, sizeof *it);
             zone1(ins, &it->zone);
-            it->item = ins[10], it->count = ins[11], it->at = at;
+            it->item = ins[10], it->count = ins[11], it->flag = ins[22], it->at = at;
         }
         r->items++;
         break;
@@ -352,12 +352,20 @@ static void add_text(PeImpLogicBuilder *b, unsigned game, const uint8_t *rdt, ui
     for (uint32_t i = 0; i < count && o; i++) {
         uint32_t at = le16(m + 2 * i), end = i + 1 < count ? le16(m + 2 * i + 2) : len;
         if (end > len || at > end) at = end = 0;
+        const size_t message_start = olen;
         int text = !(game == PE_IMP_RE1 && at < end && m[at] == 0x04);
         for (uint32_t k = at; text && k < end; k++) {
             unsigned c = m[k];
             if (game == PE_IMP_RE1) {                                    /* RE1's own codes (read from the disc) */
                 static const char *const k_stars[4] = {"S.", "T.", "A.", "R."};
                 if (c == 0x01) break;                                       /* 01 p: the end */
+                if (c >= 0x80) {
+                    /* Japanese PS1 discs use an extended encoding. Keep the original in MSG0
+                     * and discard the partial result from the English glyph table. */
+                    olen = message_start;
+                    put(&o, &olen, &cap, "This message uses an unsupported text encoding.");
+                    break;
+                }
                 if (c == 0x02) put(&o, &olen, &cap, "\n");
                 else if (c == 0x03) put(&o, &olen, &cap, "#"), k++;      /* 03 p: a page break */
                 else if (c == 0x04) k++;                                    /* 04 p: a pause or cue */
@@ -374,7 +382,8 @@ static void add_text(PeImpLogicBuilder *b, unsigned game, const uint8_t *rdt, ui
             else if (c == 0xFD) put(&o, &olen, &cap, "#"), k++;
             else if (c < 96) put(&o, &olen, &cap, k_chars[c]);
         }
-        if (o) put(&o, &olen, &cap, ""), o[olen++] = 0;               /* each ends in NUL */
+        put(&o, &olen, &cap, "");
+        if (o) o[olen++] = 0;                                      /* each ends in NUL */
     }
     if (o) pe_imp_logic_add(b, PE_IMP_LOGIC_TEXT, count, o, (uint32_t)olen);
     free(o);

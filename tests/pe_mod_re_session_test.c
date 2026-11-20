@@ -10,6 +10,7 @@
 #include "pe_imp.h"
 #include "pe_imp_internal.h"
 #include "pe_imp_logic.h"
+#include "pe_imp_rdt.h"
 #include "pe_imp_room.h"
 #include "pe_re_save.h"
 #include "pe_re_session.h"
@@ -172,9 +173,14 @@ static void re1_mansion(const char *cue) {
     if (session.stage == 0 && session.room == 5) {
         CHECK(pe_re_session_step(&session, store, 12500, 3300, 0, why, sizeof why) != PE_RE_SAID);
         CHECK(pe_re_session_step(&session, store, 12500, 3300, 1, why, sizeof why) == PE_RE_SAID);
-        CHECK(strstr(session.said, "nothing inside") != NULL);
+        CHECK(strstr(session.said, "nothing inside") ||
+              !strcmp(session.said, "This message uses an unsupported text encoding."));
+        printf("RE1 Jill examine: %s\n", session.said);
     }
     CHECK(!pe_re_session_enter(&session, store, 0, 6, 0, 14000, 17000, 0, why, sizeof why));
+    PeImpPickup ribbon;
+    CHECK(pe_re_pickup_at(session.logic, &session.run, &session.progress, 14000, 17000, &ribbon) >= 0 &&
+          ribbon.item == PE_RE1_INK_RIBBON && ribbon.flag == 0x34);
     CHECK(pe_re_session_step(&session, store, 14000, 17000, 1, why, sizeof why) == PE_RE_SAID);
     CHECK(pe_re_has(&session.progress, PE_RE1_INK_RIBBON));
     CHECK(pe_re_session_step(&session, store, 14000, 17000, 1, why, sizeof why) == PE_RE_ZONE);
@@ -215,8 +221,71 @@ static void re1_mansion(const char *cue) {
     }
 }
 
+static void re1_check_text(void) {
+    const uint8_t messages[] = {
+        6, 0, 10, 0, 15, 0,
+        0x1d, 0x79, 0x01, 0x00,             /* A. */
+        0x1d, 0xf9, 0xa2, 0x01, 0x00,       /* extended encoding after an English glyph */
+        0x04, 0xf9, 0x01, 0x00              /* cue, no display text */
+    };
+    uint8_t rdt[148 + sizeof messages] = {[0x74] = 148};
+    memcpy(rdt + 148, messages, sizeof messages);
+    PeImpRoomLogic *logic = pe_imp_rdt_logic(PE_IMP_RE1, 1, 0, 6, rdt, sizeof rdt, NULL, 0);
+    CHECK(logic);
+    if (!logic) return;
+
+    uint32_t bytes;
+    const uint8_t *raw = pe_imp_logic_section(logic, PE_IMP_LOGIC_MSG0, NULL, &bytes);
+    CHECK(raw && bytes == sizeof messages && !memcmp(raw, messages, bytes));
+    char say[80];
+    CHECK(!pe_re_message(logic, 0, say, sizeof say) && !strcmp(say, "A."));
+    CHECK(!pe_re_message(logic, 1, say, sizeof say) &&
+          !strcmp(say, "This message uses an unsupported text encoding."));
+    CHECK(pe_re_message(logic, 2, say, sizeof say));
+    free(logic);
+}
+
+static void re1_check_pickups(void) {
+    uint8_t rdt[202] = {
+        [0x60] = 148, [148] = 54,
+        [150] = 0x18, [151] = 1, [156] = 100, [158] = 100, [160] = 47, [161] = 3,
+        [176] = 0x18, [177] = 2, [178] = 200, [182] = 100, [184] = 100,
+        [186] = 53, [187] = 1, [198] = 0x34
+    };
+    PeImpRoomLogic *logic = pe_imp_rdt_logic(PE_IMP_RE1, 1, 0, 6, rdt, sizeof rdt, NULL, 0);
+    CHECK(logic);
+    if (!logic) return;
+
+    PeReProgress progress = {0};
+    PeImpPickup first, second;
+    char say[80];
+    CHECK(!pe_imp_logic_pickup(logic, 0, &first) && first.flag == 0);
+    CHECK(!pe_imp_logic_pickup(logic, 1, &second) && second.flag == 0x34);
+    CHECK(!pe_re_take(&progress, logic, &first, NULL, say, sizeof say));
+    CHECK(pe_re_pickup_at(logic, NULL, &progress, 50, 50, NULL) < 0);
+    CHECK(pe_re_pickup_at(logic, NULL, &progress, 250, 50, &second) == 1);
+    CHECK(!pe_re_take(&progress, logic, &second, NULL, say, sizeof say));
+    CHECK(pe_re_pickup_at(logic, NULL, &progress, 250, 50, NULL) < 0);
+
+    progress.taken[0] = 6u << 16;   /* room-only entry from an earlier preview save */
+    progress.ntaken = 1;
+    CHECK(pe_re_pickup_gone(logic, NULL, &progress, &second));
+
+    PeImpLogicBuilder *legacy = pe_imp_logic_begin(PE_IMP_RE1, 1, 0, 6);
+    second.flag = 0;
+    CHECK(legacy && !pe_imp_logic_add_pickup(legacy, &second, 1) &&
+          !pe_imp_logic_add_origins(legacy, NULL, 0, NULL, 0, &second, 1) &&
+          !pe_imp_logic_add(legacy, PE_IMP_LOGIC_RDT0, 0, rdt, sizeof rdt));
+    PeImpRoomLogic *old_logic = pe_imp_logic_finish(legacy);
+    CHECK(old_logic && !pe_imp_logic_pickup(old_logic, 0, &second) && second.flag == 0x34);
+    free(old_logic);
+    free(logic);
+}
+
 int main(void) {
     re1_check_branches();
+    re1_check_text();
+    re1_check_pickups();
     char why[200] = "";
 
     /* A short RE1 wall can straddle the signed 16-bit boundary. It must

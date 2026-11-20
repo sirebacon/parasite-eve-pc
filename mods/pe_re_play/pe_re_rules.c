@@ -117,6 +117,9 @@ PeReDoorAnswer pe_re_door_try(PeReProgress *p, const PeImpDoor *d, const PeImpRo
     return PE_RE_DOOR_LOCKED;
 }
 
+/* RE1 uses the low eight bits. Bit 8 distinguishes an item from an old room-wide entry. */
+#define RE1_PICKUP_KEY_BASE 0x100u
+
 static uint32_t taken_key(const PeImpRoomLogic *room, uint16_t flag) {
     return room->stage << 24 | (room->room & 0xFF) << 16 | flag;
 }
@@ -137,7 +140,13 @@ int pe_re_zone_kind(const PeReScdRun *run, uint8_t id, int sce, uint8_t data[6])
 static int live(const PeReScdRun *run, uint32_t at) { return !run || pe_re_scd_live(run, at); }
 
 int pe_re_pickup_gone(const PeImpRoomLogic *room, const PeReScdRun *run, const PeReProgress *p, const PeImpPickup *pk) {
-    return !pk->item || was_taken(p, taken_key(room, pk->flag)) ||
+    if (!pk->item) return 1;
+    if (room->game == PE_IMP_RE1) {
+        /* Earlier imports assigned flag zero to every RE1 pickup. An old save can only
+         * identify the room, so retain its room-wide suppression for that room. */
+        return was_taken(p, taken_key(room, 0)) || was_taken(p, taken_key(room, RE1_PICKUP_KEY_BASE | pk->flag));
+    }
+    return was_taken(p, taken_key(room, pk->flag)) ||
            (run && run->ran && pe_re_flag(&p->flags, PE_RE_FG_ITEM, pk->flag));
 }
 
@@ -164,7 +173,7 @@ int pe_re_take(PeReProgress *p, const PeImpRoomLogic *room, const PeImpPickup *p
         snprintf(say, n, "No room for the %s.", name);
         return -1;
     }
-    p->taken[p->ntaken++] = taken_key(room, pk->flag);
+    p->taken[p->ntaken++] = taken_key(room, room->game == PE_IMP_RE1 ? RE1_PICKUP_KEY_BASE | pk->flag : pk->flag);
     pe_re_flag_set(&p->flags, PE_RE_FG_ITEM, pk->flag, 1);
     if (pk->count > 1) snprintf(say, n, "Picked up %u %s.", (unsigned)pk->count, name);
     else snprintf(say, n, "Picked up the %s.", name);
