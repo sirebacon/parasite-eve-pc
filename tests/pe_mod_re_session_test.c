@@ -29,6 +29,48 @@ static void rect(int16_t x[4], int16_t z[4], int x0, int z0, int x1, int z1) {
 #define ROOMS_MAX 512
 static const char *s_store = "pe-re-session-test/store";
 
+static void re1_check_branches(void) {
+    /* IF Jill, define the first trigger; ELSE, define the alternate trigger. */
+    uint8_t rdt[196] = {
+        [0x60] = 148, [148] = 48,
+        [150] = 1, [151] = 24,
+        [152] = 4, [155] = 1,
+        [156] = 0x0d,
+        [174] = 2, [175] = 20,
+        [176] = 0x0d
+    };
+    PeImpTrigger triggers[] = {
+        {.zone.id = 1, .zone.sce = 0x10, .data = {0x81}, .at = 156},
+        {.zone.id = 2, .zone.sce = 0x08, .data = {0x81}, .at = 176}
+    };
+    for (unsigned i = 0; i < 2; i++)
+        rect(triggers[i].zone.x, triggers[i].zone.z, 0, 0, 1000, 1000);
+
+    for (unsigned player = 0; player < 2; player++) {
+        PeImpLogicBuilder *builder = pe_imp_logic_begin(PE_IMP_RE1, player, 0, 0);
+        CHECK(builder && !pe_imp_logic_add(builder, PE_IMP_LOGIC_RDT0, 0, rdt, sizeof rdt));
+        CHECK(!pe_imp_logic_add_trigger(builder, triggers, 2));
+        CHECK(!pe_imp_logic_add_origins(builder, NULL, 0, triggers, 2, NULL, 0));
+        PeReSession session = {.game = pe_re_game_named("re1"), .logic = pe_imp_logic_finish(builder)};
+        pe_re_scd_run(session.logic, NULL, NULL, &session.run);
+        CHECK(pe_re_scd_live(&session.run, 156) == (player == 1));
+        CHECK(pe_re_scd_live(&session.run, 176) == (player == 0));
+        char why[80];
+        CHECK(pe_re_session_step(&session, s_store, 500, 500, 1, why, sizeof why) == PE_RE_ZONE);
+        CHECK(session.zone.sce == (player ? PE_RE_ZONE_SAVE : PE_RE_ZONE_ITEMBOX));
+        pe_re_session_end(&session);
+    }
+
+    rdt[153] = 4;                    /* unimplemented flag bank: keep both paths */
+    PeImpLogicBuilder *builder = pe_imp_logic_begin(PE_IMP_RE1, 1, 0, 0);
+    CHECK(builder && !pe_imp_logic_add(builder, PE_IMP_LOGIC_RDT0, 0, rdt, sizeof rdt));
+    PeImpRoomLogic *logic = pe_imp_logic_finish(builder);
+    PeReScdRun run;
+    pe_re_scd_run(logic, NULL, NULL, &run);
+    CHECK(pe_re_scd_live(&run, 156) && pe_re_scd_live(&run, 176));
+    free(logic);
+}
+
 /* Jill's mansion hall exercises the RE1 importer through the portable session. The same
  * background is shared with Chris, but the door and collision records are Jill's variant. */
 static void re1_mansion(const char *cue) {
@@ -149,9 +191,32 @@ static void re1_mansion(const char *cue) {
     CHECK(session.zone.sce == PE_RE_ZONE_ITEMBOX);
     printf("RE1 Jill: examine, typewriter, item box, and two-way mansion stairs\n");
     pe_re_session_end(&session);
+
+    /* Jill's room 40F registers two triggers under the character flag check. */
+    PeImpRoomLogic *variant = NULL;
+    CHECK(!pe_imp_catalog_roomlogic(store, "re1:logic/40f-1", &variant, why, sizeof why));
+    if (variant) {
+        uint32_t count = 0;
+        unsigned checked = 0;
+        pe_imp_logic_section(variant, PE_IMP_LOGIC_TRIG, &count, NULL);
+        PeReScdRun jill, chris;
+        pe_re_scd_run(variant, NULL, NULL, &jill);
+        variant->player = 0;
+        pe_re_scd_run(variant, NULL, NULL, &chris);
+        for (uint32_t i = 0; i < count; i++) {
+            PeImpTrigger trigger;
+            if (pe_imp_logic_trigger(variant, i, &trigger) || trigger.zone.sce != 7 ||
+                (trigger.zone.id != 2 && trigger.zone.id != 3)) continue;
+            CHECK(pe_re_scd_live(&jill, trigger.at) && !pe_re_scd_live(&chris, trigger.at));
+            checked++;
+        }
+        CHECK(checked == 2);
+        free(variant);
+    }
 }
 
 int main(void) {
+    re1_check_branches();
     char why[200] = "";
 
     /* A short RE1 wall can straddle the signed 16-bit boundary. It must

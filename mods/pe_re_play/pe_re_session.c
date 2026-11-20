@@ -241,7 +241,7 @@ static PeReChange re1_examine(PeReSession *s, double x, double z) {
     pe_re_front(x, z, s->facing, &front_x, &front_z);
     for (uint32_t i = 0; i < count; i++) {
         PeImpTrigger trigger;
-        if (pe_imp_logic_trigger(s->logic, i, &trigger)) continue;
+        if (pe_imp_logic_trigger(s->logic, i, &trigger) || !pe_re_scd_live(&s->run, trigger.at)) continue;
         const int kind = pe_re1_examine_kind(&trigger);
         if (!kind || (!pe_re_in_quad(trigger.zone.x, trigger.zone.z, x, z) &&
                       !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)))

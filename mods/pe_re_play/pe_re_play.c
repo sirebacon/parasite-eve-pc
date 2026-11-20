@@ -610,6 +610,10 @@ static void to_room(void) {
 static void refresh(void) { s_listed = 0; list_games(); }
 static void text_scripts(char *out, unsigned size) {
     const PeReScdRun *r = &s_session.run;
+    if (s_playing && s_session.logic->game == PE_IMP_RE1) {
+        snprintf(out, size, "RE1 scenario filter: %d inactive zone definitions.", r->re1_hidden);
+        return;
+    }
     if (!s_playing || !r->ran) { snprintf(out, size, s_playing ? "Not run (every zone counts)." : "-"); return; }
     snprintf(out, size, "%d tasks running; %d instructions, %d skipped (first 0x%02X), %d over budget; %d zones, %d changed; %d events; F/U zone %d/%d.",
              r->waiting, r->executed, r->skipped, r->skipped ? r->first_skipped : 0, r->stopped, r->nlive, r->nreset,

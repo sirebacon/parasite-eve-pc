@@ -85,6 +85,7 @@ typedef struct {
     int ran;                                   /* 1: the scripts ran (else every record is live) */
     uint32_t live[PE_RE_LIVE_MAX];             /* RDT offsets of zone instructions that ran */
     int nlive;
+    int re1_hidden;                            /* RE1 reuses live[] for inactive offsets; ran stays 0. */
     uint32_t slot[PE_RE_SLOTS];                /* each zone id's instruction (RDT offset), 0 none */
     PeReReset reset[PE_RE_RESETS_MAX];         /* aot_reset, in order */
     int nreset;

@@ -378,10 +378,76 @@ static int setup(Vm *vm, const PeImpRoomLogic *l, PeReFlags *flags, const PeReSc
     return 1;
 }
 
+/* RE1 scenario gating. IF/ELSE lengths are relative to their opcode. Use
+ * the importer's instruction walker so hidden offsets match stored zone origins.
+ * A condition we cannot evaluate leaves both branches available to the preview. */
+typedef struct {
+    const uint8_t *rdt;
+    uint32_t size, proc, spans;
+    struct { uint32_t start, end; } hidden[32];
+    unsigned player;
+    PeReScdRun *run;
+} Re1Branches;
+
+static void re1_branch(void *ctx, uint32_t proc, uint32_t at, const uint8_t *op, uint32_t len) {
+    Re1Branches *b = ctx;
+    if (proc != b->proc) b->proc = proc, b->spans = 0;
+    for (unsigned i = 0; i < b->spans;) {
+        if (at >= b->hidden[i].end) {
+            b->hidden[i] = b->hidden[--b->spans];
+            continue;
+        }
+        if (at < b->hidden[i++].start) continue;
+        if ((op[0] == 0x0c || op[0] == 0x0d || op[0] == 0x18) && b->run->re1_hidden < PE_RE_LIVE_MAX)
+            b->run->live[b->run->re1_hidden++] = at;
+        return;
+    }
+    if (op[0] != 1 || op[1] <= len || op[1] >= b->size - at ||
+        b->spans == sizeof b->hidden / sizeof *b->hidden) return;
+
+    const uint32_t boundary = at + op[1];
+    if (b->rdt[boundary] != 2 && b->rdt[boundary] != 3) return;
+    int known = 0, unknown = 0, failed = 0;
+    for (uint32_t q = at + len; q < boundary;) {
+        const uint8_t *test = b->rdt + q;
+        if ((test[0] < 4 || test[0] > 7) && test[0] != 0x10 && test[0] != 0x11) break;
+        const uint32_t size = pe_imp_scd_size(PE_IMP_RE1, test[0]);
+        if (!size || size > boundary - q) return;
+        if (test[0] == 4 && test[1] == 0 && test[2] == 0 && test[3] <= 1) {
+            known = 1;
+            if (test[3] != (b->player != 0)) failed = 1;
+        } else {
+            unknown = 1;
+        }
+        q += size;
+    }
+
+    if (failed) {
+        b->hidden[b->spans].start = at + len;
+        b->hidden[b->spans++].end = boundary;
+    } else if (known && !unknown && b->rdt[boundary] == 2 && b->size - boundary >= 2) {
+        const unsigned length = b->rdt[boundary + 1];
+        if (length > 2 && length <= b->size - boundary) {
+            b->hidden[b->spans].start = boundary + 2;
+            b->hidden[b->spans++].end = boundary + length;
+        }
+    }
+}
+
+static void re1_scenario_zones(const PeImpRoomLogic *l, PeReScdRun *run) {
+    Re1Branches b = {.player = l->player, .run = run};
+    b.rdt = pe_imp_logic_section(l, PE_IMP_LOGIC_RDT0, NULL, &b.size);
+    if (b.rdt) pe_imp_scd_walk(PE_IMP_RE1, b.rdt, b.size, re1_branch, &b, NULL);
+}
+
 void pe_re_scd_run(const PeImpRoomLogic *l, PeReFlags *flags, const PeReScdHost *host, PeReScdRun *out) {
     Vm vm;
     memset(out, 0, sizeof *out);
     out->message = -1;
+    if (l && l->game == PE_IMP_RE1) {
+        re1_scenario_zones(l, out);
+        return;
+    }
     if (!setup(&vm, l, flags, host, out, BUDGET_ENTRY)) return;
     if (pe_imp_rdt_section(vm.rdt, vm.size, SCRIPT_INIT, &out->sec[0], &out->len[0])) out->sec[0] = out->len[0] = 0;
     if (pe_imp_rdt_section(vm.rdt, vm.size, SCRIPT_MAIN, &out->sec[1], &out->len[1])) out->sec[1] = out->len[1] = 0;
@@ -415,7 +481,11 @@ int pe_re_scd_running(const PeReScdRun *run, unsigned proc) {
 }
 
 int pe_re_scd_live(const PeReScdRun *r, uint32_t at) {
-    if (!r->ran || !at) return 1;                          /* not run, or a store from before ZAT0 */
+    if (!at) return 1;
+    if (!r->ran) {
+        for (int i = 0; i < r->re1_hidden; i++) if (r->live[i] == at) return 0;
+        return 1;
+    }                          /* not run, or a store from before ZAT0 */
     for (int i = 0; i < r->nlive; i++) if (r->live[i] == at) return 1;
     return 0;
 }
