@@ -42,6 +42,10 @@ int pe_re_camera_at(const PeImpRoomLogic *l, int camera, double x, double z);
 /* The door whose zone holds (x, z), or -1. `run` (may be NULL): only doors the room's scripts set
  * up, and not turned into something else by an aot_reset. */
 int pe_re_door_at(const PeImpRoomLogic *l, const PeReScdRun *run, double x, double z, PeImpDoor *door);
+/* RE1 stairs have their own door animation IDs and link two RDT rooms. */
+int pe_re_door_is_stairway(const PeImpRoomLogic *room, const PeImpDoor *door);
+/* Translate RE1 examine triggers into the runtime action kinds. */
+int pe_re1_examine_kind(const PeImpTrigger *trigger);
 
 /* The nearest point to (x, z) where a body of `radius` stands clear of `floor`'s walls (a door's
  * landing point can sit on a wall's edge): rings out to `reach`. 1 and the point, or 0. */

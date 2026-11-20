@@ -3847,7 +3847,7 @@
     },
     {
       "path": "mods/CMakeLists.txt",
-      "sha256": "2ec593a09abb6e8eabe6dd28699385cd23f8f0f8276cf4565cd415cd57c46586"
+      "sha256": "62f2ffcca57c6e0948072a1fd0af7a3ae22e72db07c0bf1d301714c20bcd5b61"
     },
     {
       "path": "mods/host/debug/pe_debug_battle.c",
@@ -4823,7 +4823,7 @@
     },
     {
       "path": "mods/host/import/pe_imp_room.c",
-      "sha256": "ed653cd13e596df98cf4f0755f738739dec21a3df5ff02aa4ebc6a505ef41a4d"
+      "sha256": "70d878e7f4c951b38b83d8487d4a2988bab489e4d4cb6eb5889a43767bc4d4cb"
     },
     {
       "path": "mods/host/import/pe_imp_room.h",
@@ -4995,7 +4995,7 @@
     },
     {
       "path": "mods/pe_re_play/pe_re_play.c",
-      "sha256": "83e74b8aded1c50ab320026b368a6d9f9ee8c552656fc90629d364539ff48a95"
+      "sha256": "3998bd5d56115c94cfbdd70a7ab4dcd8d220c6cde33c9be461452c0c55a37531"
     },
     {
       "path": "mods/pe_re_play/pe_re_save.c",
@@ -5003,7 +5003,7 @@
     },
     {
       "path": "mods/pe_re_play/pe_re_session.c",
-      "sha256": "82d0f46c0743e520f7245a2687ae25f425522accc36ae4f3fa85e17349bcbeb4"
+      "sha256": "5cb8d2ce4e45f2408064f9214a7ce2166d5b2085256b3b626806c8866b06c1db"
     },
     {
       "path": "mods/pe_re_play/pe_re_scd.c",

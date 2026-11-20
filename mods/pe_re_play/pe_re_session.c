@@ -85,6 +85,20 @@ int pe_re_door_at(const PeImpRoomLogic *l, const PeReScdRun *run, double x, doub
     return -1;
 }
 
+int pe_re_door_is_stairway(const PeImpRoomLogic *room, const PeImpDoor *door) {
+    return room && room->game == PE_IMP_RE1 && door->animation >= 0x16 && door->animation <= 0x19;
+}
+
+int pe_re1_examine_kind(const PeImpTrigger *trigger) {
+    if ((trigger->data[0] & 0x81) != 0x81) return PE_RE_ZONE_NOTHING;
+    switch (trigger->zone.sce) {
+    case 0x02: return trigger->data[1] & 0x80 ? PE_RE_ZONE_MESSAGE : PE_RE_ZONE_NOTHING;
+    case 0x08: return PE_RE_ZONE_ITEMBOX;
+    case 0x10: return PE_RE_ZONE_SAVE;
+    default: return PE_RE_ZONE_NOTHING;
+    }
+}
+
 int pe_re_free_spot(const PeRe2RoomCollision *c, int floor, double *x, double *z, int radius, int reach) {
     if (!pe_imp_re2_blocked_on(c, (unsigned)floor, *x, *z, radius)) return 1;
     for (int r = 50; r <= reach; r += 50)                  /* rings of 16 points, nearest ring first */
@@ -219,6 +233,31 @@ static PeReChange zone_act(PeReSession *s, const char *store, const PeReZoneHit 
     }
 }
 
+/* RE1 AOT_SET keeps its activation and message selector in the payload. */
+static PeReChange re1_examine(PeReSession *s, double x, double z) {
+    uint32_t count = 0;
+    pe_imp_logic_section(s->logic, PE_IMP_LOGIC_TRIG, &count, NULL);
+    double front_x, front_z;
+    pe_re_front(x, z, s->facing, &front_x, &front_z);
+    for (uint32_t i = 0; i < count; i++) {
+        PeImpTrigger trigger;
+        if (pe_imp_logic_trigger(s->logic, i, &trigger)) continue;
+        const int kind = pe_re1_examine_kind(&trigger);
+        if (!kind || (!pe_re_in_quad(trigger.zone.x, trigger.zone.z, x, z) &&
+                      !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)))
+            continue;
+        if (kind == PE_RE_ZONE_MESSAGE) {
+            const unsigned index = trigger.data[1] & 0x7f;
+            if (pe_re_message(s->logic, index, s->said, sizeof s->said)) continue;
+            return PE_RE_SAID;
+        }
+        s->zone = (PeReZoneHit){.id = trigger.zone.id, .sce = (uint8_t)kind,
+                               .from = PE_RE_FROM_TRIGGER, .index = i};
+        return PE_RE_ZONE;
+    }
+    return PE_RE_STAY;
+}
+
 PeReChange pe_re_session_step(PeReSession *s, const char *store, double x, double z, int action, char *why, size_t n) {
     PeImpDoor d;
     PeImpPickup pk;
@@ -236,12 +275,23 @@ PeReChange pe_re_session_step(PeReSession *s, const char *store, double x, doubl
         }
         /* else, more forgiving than the game: a door, pickup or message zone she stands in */
         if (pe_re_door_at(s->logic, &s->run, x, z, &d) >= 0) return take_door(s, store, &d, why, n);
-        if (pe_re_pickup_at(s->logic, &s->run, &s->progress, x, z, &pk) >= 0) {
+        int pickup = pe_re_pickup_at(s->logic, &s->run, &s->progress, x, z, &pk);
+        if (pickup < 0 && s->logic->game == PE_IMP_RE1) {
+            double front_x, front_z;
+            pe_re_front(x, z, s->facing, &front_x, &front_z);
+            pickup = pe_re_pickup_at(s->logic, &s->run, &s->progress, front_x, front_z, &pk);
+        }
+        if (pickup >= 0) {
             pe_re_take(&s->progress, s->logic, &pk, s->items, s->said, sizeof s->said);
             return PE_RE_SAID;
         }
-        const int message = pe_re_message_at(s->logic, &s->run, x, z);
-        if (message >= 0 && !pe_re_message(s->logic, (uint32_t)message, s->said, sizeof s->said)) return PE_RE_SAID;
+        if (s->logic->game == PE_IMP_RE1) {
+            const PeReChange change = re1_examine(s, x, z);
+            if (change != PE_RE_STAY) return change;
+        } else {
+            const int message = pe_re_message_at(s->logic, &s->run, x, z);
+            if (message >= 0 && !pe_re_message(s->logic, (uint32_t)message, s->said, sizeof s->said)) return PE_RE_SAID;
+        }
     }
     /* every frame: the zones that don't wait for an examine */
     const int nh = pe_re_zone_check(s->logic, &s->run, &s->progress, x, z, s->facing, s->floor, 0,

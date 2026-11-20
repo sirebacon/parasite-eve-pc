@@ -202,6 +202,10 @@ static void open_item_box(int at) {
     s_pick = re_host()->choose("Item box", labels, n, at < n ? at : n - 1) ? PICK_BOX : PICK_NONE;
 }
 
+static uint16_t ink_ribbon(void) {
+    return s_session.logic && s_session.logic->game == PE_IMP_RE1 ? PE_RE1_INK_RIBBON : PE_RE2_INK_RIBBON;
+}
+
 /* a zone the session hands over: the pocket, an item box, a typewriter */
 static void zone_handed(void) {
     switch (s_session.zone.sce) {
@@ -209,7 +213,7 @@ static void zone_handed(void) {
     case PE_RE_ZONE_ITEMBOX: open_item_box(0); break;
     case PE_RE_ZONE_SAVE: {
         static const char *const yes_no[2] = {"Yes", "No"};
-        if (!pe_re_has(&s_session.progress, PE_RE2_INK_RIBBON))
+        if (!pe_re_has(&s_session.progress, ink_ribbon()))
             say("There's a typewriter. With an Ink Ribbon you could record your progress.");
         else if (re_host()->choose("Use an Ink Ribbon to save?", yes_no, 2, 0))
             s_pick = PICK_SAVE;
@@ -228,7 +232,7 @@ static void picked(void) {
     s_pick = PICK_NONE;
     if (c < 0) return;                                      /* backed out */
     if (mode == PICK_SAVE) {
-        if (c == 0 && !pe_re_lose(&s_session.progress, PE_RE2_INK_RIBBON, 1)) s_typing = TYPE_OPEN, s_typed = 0;
+        if (c == 0 && !pe_re_lose(&s_session.progress, ink_ribbon(), 1)) s_typing = TYPE_OPEN, s_typed = 0;
         return;
     }
     if (mode == PICK_USE) {
@@ -387,7 +391,7 @@ static int on_frame(void *ctx, void *user) {
         return 0;
     }
     if (s_typing == TYPE_SCREEN && re_host()->room_active() && re_host()->field_free() && !re_host()->native_menu_active()) {
-        if (!s_typed) pe_re_give(&s_session.progress, PE_RE2_INK_RIBBON, 1);   /* backed out: not used */
+        if (!s_typed) pe_re_give(&s_session.progress, ink_ribbon(), 1);   /* backed out: not used */
         snprintf(s_status, sizeof s_status, s_typed ? "Saved at the typewriter." : "Not saved.");
         s_typing = TYPE_NONE;
     }
@@ -453,7 +457,9 @@ static int on_frame(void *ctx, void *user) {
         s_room_reported = 0;
         re_host()->set_placements(NULL, 0);
         pe_re_door_begin(s_session.game->game, &s_session.door);
-        snprintf(s_status, sizeof s_status, "Through the door to %x-%02X.%s%s", (unsigned)s_session.stage + 1,
+        snprintf(s_status, sizeof s_status, "%s %x-%02X.%s%s",
+                 pe_re_door_is_stairway(s_session.logic, &s_session.door) ? "Stairway to" : "Through the door to",
+                 (unsigned)s_session.stage + 1,
                  (unsigned)s_session.room, s_session.said[0] ? " " : "", s_session.said);
         break;
     case PE_RE_SAID:
@@ -470,6 +476,28 @@ static int on_frame(void *ctx, void *user) {
     return 0;
 }
 
+static int re1_zone_approach(const PeImpZone *zone, double *x, double *z, int *facing) {
+    /* Some examine zones are centered on the furniture itself. Search from the
+     * center outward for walkable ground with the examine point in the zone. */
+    for (int ring = 1; ring <= 4; ring++) {
+        for (int k = 0; k < 16; k++) {
+            const int yaw = k * 256;
+            double near_x, near_z, front_x, front_z;
+            pe_re_front(*x, *z, yaw + 2048, &near_x, &near_z);
+            near_x = *x + (near_x - *x) * ring;
+            near_z = *z + (near_z - *z) * ring;
+            pe_re_front(near_x, near_z, yaw, &front_x, &front_z);
+            if (re_host()->position_blocked(near_x, near_z) ||
+                !pe_re_in_quad(zone->x, zone->z, front_x, front_z)) continue;
+            *x = near_x;
+            *z = near_z;
+            *facing = yaw;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Testing: stand in the middle of the room's next doorway, pickup or message zone (those its scripts
  * set up), one after another each time (the camera stays as it is). */
 static void to_zone(uint32_t tag, int kind, const char *what) {
@@ -477,6 +505,7 @@ static void to_zone(uint32_t tag, int kind, const char *what) {
     static const PeImpRoomLogic *s_room;
     uint32_t n = 0, *next = &s_next[tag == PE_IMP_LOGIC_PICK ? 1 : tag != PE_IMP_LOGIC_TRIG ? 0 : 2 + (kind & 7)];
     int front = 0;
+    PeImpZone selected;
     double bx = 0, bz = 0;
     int found = 0;
     if (s_battle_paused) return;
@@ -493,27 +522,33 @@ static void to_zone(uint32_t tag, int kind, const char *what) {
         const PeImpZone *zone = &d.zone;
         if (tag == PE_IMP_LOGIC_PICK) {
             if (pe_imp_logic_pickup(s_session.logic, i, &pk) || !pe_re_scd_live(&s_session.run, pk.at) ||
-                pe_re_flag(&s_session.progress.flags, PE_RE_FG_ITEM, pk.flag))
+                pe_re_pickup_gone(s_session.logic, &s_session.run, &s_session.progress, &pk))
                 continue;
             zone = &pk.zone;
         } else if (tag == PE_IMP_LOGIC_TRIG) {
-            if (pe_imp_logic_trigger(s_session.logic, i, &t) || !pe_re_scd_live(&s_session.run, t.at) ||
-                pe_re_zone_kind(&s_session.run, t.zone.id, t.zone.sce, t.data) != kind)
+            if (pe_imp_logic_trigger(s_session.logic, i, &t) || !pe_re_scd_live(&s_session.run, t.at)) continue;
+            const int action = s_session.logic->game == PE_IMP_RE1 ? pe_re1_examine_kind(&t)
+                               : pe_re_zone_kind(&s_session.run, t.zone.id, t.zone.sce, t.data);
+            if (action != kind)
                 continue;
             if (kind == PE_RE_ZONE_FLAG && ((t.data[0] | t.data[1] << 8) != PE_RE_FG_USE || !t.data[4])) continue;
             if (kind == PE_RE_ZONE_FLAG) s_use_here = (uint16_t)(t.data[2] | t.data[3] << 8);
             zone = &t.zone;
             front = (t.zone.sat & (PE_RE_SAT_UNDER | PE_RE_SAT_FRONT)) == PE_RE_SAT_FRONT;
         } else if (pe_imp_logic_door(s_session.logic, i, &d) || !pe_re_scd_live(&s_session.run, d.at) ||
-                   pe_re_zone_kind(&s_session.run, d.zone.id, d.zone.sce, NULL) != d.zone.sce) {
+                   pe_re_zone_kind(&s_session.run, d.zone.id, d.zone.sce, NULL) != d.zone.sce ||
+                   (kind && !pe_re_door_is_stairway(s_session.logic, &d))) {
             continue;
         }
         for (int c = 0; c < 4; c++) bx += zone->x[c] / 4.0, bz += zone->z[c] / 4.0;
+        selected = *zone;
         found = 1, *next = i + 1;
     }
     if (!found) { snprintf(s_status, sizeof s_status, "This room has no %ss.", what); return; }
     int face = 0;
-    if (front) {                                          /* checked in front of her: stand back, facing it */
+    if (s_session.logic->game == PE_IMP_RE1 && tag != PE_IMP_LOGIC_DOOR) {
+        front = re1_zone_approach(&selected, &bx, &bz, &face);
+    } else if (front) {                                          /* checked in front of her: stand back, facing it */
         double sx, sz;
         for (int k = 0; k < 16; k++) {                    /* the first free spot round it */
             pe_re_front(bx, bz, k * 256 + 2048, &sx, &sz);
@@ -536,7 +571,7 @@ static void to_item_box(void) { to_zone(PE_IMP_LOGIC_TRIG, PE_RE_ZONE_ITEMBOX, "
 static void to_typewriter(void) { to_zone(PE_IMP_LOGIC_TRIG, PE_RE_ZONE_SAVE, "typewriter"); }
 static void give_ribbon(void) {
     if (!s_playing) return;
-    if (pe_re_give(&s_session.progress, PE_RE2_INK_RIBBON, 1)) snprintf(s_status, sizeof s_status, "No room for an Ink Ribbon.");
+    if (pe_re_give(&s_session.progress, ink_ribbon(), 1)) snprintf(s_status, sizeof s_status, "No room for an Ink Ribbon.");
     else snprintf(s_status, sizeof s_status, "Given an Ink Ribbon.");
 }
 static void give_use_here(void) {           /* the item the last place to use one wants */
@@ -548,6 +583,10 @@ static void give_use_here(void) {           /* the item the last place to use on
 }
 static void to_ramp(void) {
     if (!s_playing || s_battle_paused) return;
+    if (s_session.logic->game == PE_IMP_RE1) {
+        to_zone(PE_IMP_LOGIC_DOOR, 1, "stairway");
+        return;
+    }
     if (!re_host()->place_at_ramp()) { snprintf(s_status, sizeof s_status, "This room has no slopes or stairs."); return; }
     re_host()->player_pose(&s_session.x, &s_session.z, &s_session.facing);
     s_session.floor = re_host()->player_floor();
@@ -615,7 +654,7 @@ static int init(void) {
     pe_menu_register_toggle("Testing", "Placement idle animation", "Animate supported placement meshes in place.", &s_placement_idle, NULL);
     pe_menu_register_action("Testing", "Go to the next door", "Puts Aya in the room's doorways, one after another.", to_door);
     pe_menu_register_action("Testing", "Go to the next pickup", "Puts Aya on the room's items, one after another.", to_pickup);
-    pe_menu_register_action("Testing", "Go to the next ramp", "Puts Aya at the foot of the room's slopes and stairs, one after another.", to_ramp);
+    pe_menu_register_action("Testing", "Go to the next ramp", "Find a stairway in RE1 or the foot of the next ramp in RE2.", to_ramp);
     pe_menu_register_action("Testing", "Go to the next message", "Puts Aya where the room's messages are read, one after another.", to_message);
     pe_menu_register_action("Testing", "Go to the next place to use an item", "Puts Aya facing where the room takes an item (a jewel in a statue), one after another.", to_item_spot);
     pe_menu_register_action("Testing", "Give the item used there", "Puts the item that place takes in the pocket.", give_use_here);

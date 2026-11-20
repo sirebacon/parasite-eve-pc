@@ -266,6 +266,17 @@ unsigned pe_imp_room_projection(const PeImpRoomView *view) {
     return 0;
 }
 
+static void re1_wall_axis(uint32_t first, uint32_t second, int32_t origin,
+                          int32_t *low, int32_t *high) {
+    int32_t a = origin + signed16((first - (uint32_t)origin) & 0xffffu);
+    int32_t b = a + signed16((second - first) & 0xffffu);
+    /* Pick the nearest copy of the short span on the 16-bit coordinate ring. */
+    const int32_t center = (a + b) / 2 - origin;
+    const int32_t shift = center > INT16_MAX ? -65536 : center < INT16_MIN ? 65536 : 0;
+    *low = (a < b ? a : b) + shift;
+    *high = (a < b ? b : a) + shift;
+}
+
 /* RE1 has five counted lists of 12-byte records after its 24-byte SCA header.
  * Unlike RE2, the record contains both corners. Unwrap the corners around the
  * room's origin before ordering them, so a positive wall past 32767 does
@@ -288,15 +299,11 @@ int pe_imp_re1_collision(const uint8_t *sca, uint32_t size, PeRe2RoomCollision *
         const uint8_t *entry = sca + HEADER + i * RECORD;
         const unsigned shape = entry[8];
         if (shape != 1 && shape != 3) continue;
-        const int32_t x0 = x_origin + signed16((le16(entry) - (uint32_t)x_origin) & 0xffffu);
-        const int32_t z0 = z_origin + signed16((le16(entry + 2) - (uint32_t)z_origin) & 0xffffu);
-        const int32_t x1 = x_origin + signed16((le16(entry + 4) - (uint32_t)x_origin) & 0xffffu);
-        const int32_t z1 = z_origin + signed16((le16(entry + 6) - (uint32_t)z_origin) & 0xffffu);
+        int32_t x0, z0, x1, z1;
+        re1_wall_axis(le16(entry), le16(entry + 4), x_origin, &x0, &x1);
+        re1_wall_axis(le16(entry + 2), le16(entry + 6), z_origin, &z0, &z1);
         if (x0 == x1 || z0 == z1) continue;
-        out->entries[out->count++] = (PeRe2Collider){
-            x0 < x1 ? x0 : x1, z0 < z1 ? z0 : z1,
-            x0 < x1 ? x1 : x0, z0 < z1 ? z1 : z0, shape == 3 ? 6 : 0, 0, 1
-        };
+        out->entries[out->count++] = (PeRe2Collider){x0, z0, x1, z1, shape == 3 ? 6 : 0, 0, 1};
     }
     return out->count ? 0 : 1;
 }

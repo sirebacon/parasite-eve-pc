@@ -39,6 +39,7 @@ static void re1_mansion(const char *cue) {
     PeImpScan scan;
     pe_imp_registry_reset();
     if (pe_imp_add_reader(&g_re1_rooms_ps1) || pe_imp_add_reader(&jill_logic) ||
+        pe_imp_add_reader(&g_re1_items_ps1) ||
         pe_imp_scan(store, cue, NULL, &scan)) {
         CHECK(0 && "RE1 mansion import failed");
         return;
@@ -126,11 +127,48 @@ static void re1_mansion(const char *cue) {
     }
     if (!entered) printf("RE1 mansion door: %u records; %s\n", doors, why);
     CHECK(entered);
+    if (session.stage == 0 && session.room == 5) {
+        CHECK(pe_re_session_step(&session, store, 12500, 3300, 0, why, sizeof why) != PE_RE_SAID);
+        CHECK(pe_re_session_step(&session, store, 12500, 3300, 1, why, sizeof why) == PE_RE_SAID);
+        CHECK(strstr(session.said, "nothing inside") != NULL);
+    }
+    CHECK(!pe_re_session_enter(&session, store, 0, 6, 0, 14000, 17000, 0, why, sizeof why));
+    CHECK(pe_re_session_step(&session, store, 14000, 17000, 1, why, sizeof why) == PE_RE_SAID);
+    CHECK(pe_re_has(&session.progress, PE_RE1_INK_RIBBON));
+    CHECK(pe_re_session_step(&session, store, 14000, 17000, 1, why, sizeof why) == PE_RE_ZONE);
+    CHECK(session.zone.sce == PE_RE_ZONE_SAVE);
+    CHECK(pe_re_session_step(&session, store, 17050, 17200, 1, why, sizeof why) == PE_RE_ROOM);
+    CHECK(session.stage == 1 && session.room == 3 && pe_re_door_is_stairway(session.logic, &session.door));
+    const uint8_t *upper = pe_imp_logic_section(session.logic, PE_IMP_LOGIC_COLL, NULL, &bytes);
+    CHECK(!pe_imp_re1_collision(upper, bytes, &walls));
+    CHECK(!pe_imp_re2_blocked_on(&walls, 0, session.x, session.z, 280));
+    CHECK(pe_re_session_step(&session, store, 17000, 22500, 1, why, sizeof why) == PE_RE_ROOM);
+    CHECK(session.stage == 0 && session.room == 6 && pe_re_door_is_stairway(session.logic, &session.door));
+    CHECK(!pe_re_session_enter(&session, store, 0, 0, 0, 7200, 2800, 0, why, sizeof why));
+    CHECK(pe_re_session_step(&session, store, 7200, 2800, 1, why, sizeof why) == PE_RE_ZONE);
+    CHECK(session.zone.sce == PE_RE_ZONE_ITEMBOX);
+    printf("RE1 Jill: examine, typewriter, item box, and two-way mansion stairs\n");
     pe_re_session_end(&session);
 }
 
 int main(void) {
     char why[200] = "";
+
+    /* A short RE1 wall can straddle the signed 16-bit boundary. It must
+     * block the edge and leave the middle of the room clear. */
+    {
+        const uint8_t sca[36] = {
+            [4] = 1,
+            [24] = 0xA0, [25] = 0x86,  /* x = 34464 modulo 65536 */
+            [26] = 0xE8, [27] = 0x03,  /* z = 1000 */
+            [28] = 0x00, [29] = 0x7D,  /* x = 32000 */
+            [32] = 1
+        };
+        PeRe2RoomCollision collision;
+        CHECK(!pe_imp_re1_collision(sca, sizeof sca, &collision) && collision.count == 1);
+        CHECK(!pe_imp_re2_blocked_on(&collision, 0, 16000, 500, 280));
+        CHECK(pe_imp_re2_blocked_on(&collision, 0, -31500, 500, 280));
+    }
 
     /* A script can replace or move a placement without changing the list length. */
     {
