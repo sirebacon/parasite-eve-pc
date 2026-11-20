@@ -186,7 +186,7 @@ static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *
     s->said[0] = 0;
     /* In RE1, key type zero permits passage even when the source door carries a lock ID. */
     if ((s->logic->game != PE_IMP_RE1 || d->lock_type) &&
-        pe_re_door_try(&s->progress, d, s->items, s->said, sizeof s->said) == PE_RE_DOOR_LOCKED) return PE_RE_SAID;
+        pe_re_door_try(&s->progress, d, s->logic, s->items, s->said, sizeof s->said) == PE_RE_DOOR_LOCKED) return PE_RE_SAID;
     const uint32_t stage = d->stage == PE_RE_STAGE_HERE ? s->stage : d->stage;
     if (!pe_re_session_enter(s, store, stage, d->room, d->camera, d->next_x, d->next_z, pe_re_facing_of(d->next_dir), why, n)) {
         s->floor = pe_re_floor_of(d->next_y);
@@ -244,10 +244,40 @@ static PeReChange zone_act(PeReSession *s, const char *store, const PeReZoneHit 
     }
 }
 
-/* The Terrarium pump's imported examine zone (ROOM10C, AOT 1). */
-static int is_terrarium_pump(const PeReSession *s, const PeImpTrigger *t) {
-    return s->stage == 0 && s->room == PE_RE1_TERRARIUM_ROOM && t->zone.id == 1 &&
-           pe_re1_examine_kind(t) == PE_RE_ZONE_MESSAGE;
+/* Item interactions use the examine zones and script triggers imported from each RDT. */
+typedef struct {
+    unsigned room, zone, kind, item, done;
+    int requires;
+    const char *hint, *result;
+} Re1ItemUse;
+
+static const Re1ItemUse k_re1_item_uses[] = {
+    {PE_RE1_TERRARIUM_ROOM, 1, 2, PE_RE1_CHEMICAL, PE_RE1_TERRARIUM_CLEARED, -1,
+     "The pump feeds water to the vines. Its lid is open.", "The chemical killed the vines."},
+    {PE_RE1_PIANO_ROOM, 2, 2, PE_RE1_MUSIC_NOTES, PE_RE1_PIANO_PLAYED, -1,
+     "A piano. Sheet music might help.", "The music opened a hidden alcove."},
+    {PE_RE1_PIANO_ROOM, 10, 2, PE_RE1_WOOD_EMBLEM, PE_RE1_PIANO_EMBLEM_PLACED, PE_RE1_PIANO_PLAYED,
+     "The pedestal takes an emblem.", "The Wooden Emblem frees the Gold Emblem."},
+    {PE_RE1_DINING_ROOM, 13, 9, PE_RE1_GOLD_EMBLEM, PE_RE1_CLOCK_OPEN, -1,
+     "An emblem fits in the recess above the fireplace.", "The clock moved, revealing the Shield Key."},
+};
+
+static int re1_use_done(const PeReSession *s, unsigned flag) {
+    return pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, flag);
+}
+
+static const Re1ItemUse *re1_item_use(const PeReSession *s, const PeImpTrigger *t) {
+    for (size_t i = 0; i < sizeof k_re1_item_uses / sizeof *k_re1_item_uses; i++) {
+        const Re1ItemUse *use = &k_re1_item_uses[i];
+        if (s->stage == 0 && s->room == use->room && t->zone.id == use->zone && t->zone.sce == use->kind &&
+            (use->requires < 0 || re1_use_done(s, (unsigned)use->requires))) return use;
+    }
+    return NULL;
+}
+
+uint16_t pe_re1_item_for_trigger(const PeReSession *s, const PeImpTrigger *trigger) {
+    const Re1ItemUse *use = re1_item_use(s, trigger);
+    return use && !re1_use_done(s, use->done) ? (uint16_t)use->item : 0;
 }
 
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */
@@ -259,17 +289,16 @@ static PeReChange re1_examine(PeReSession *s, double x, double z) {
     for (uint32_t i = 0; i < count; i++) {
         PeImpTrigger trigger;
         if (pe_imp_logic_trigger(s->logic, i, &trigger) || !pe_re_scd_live(&s->run, trigger.at)) continue;
+        if (!pe_re_in_quad(trigger.zone.x, trigger.zone.z, x, z) &&
+            !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)) continue;
+        const Re1ItemUse *use = re1_item_use(s, &trigger);
+        if (use) {
+            snprintf(s->said, sizeof s->said, "%s", re1_use_done(s, use->done) ? use->result : use->hint);
+            return PE_RE_SAID;
+        }
         const int kind = pe_re1_examine_kind(&trigger);
-        if (!kind || (!pe_re_in_quad(trigger.zone.x, trigger.zone.z, x, z) &&
-                      !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)))
-            continue;
+        if (!kind) continue;
         if (kind == PE_RE_ZONE_MESSAGE) {
-            if (is_terrarium_pump(s, &trigger)) {
-                const int cleared = pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED);
-                snprintf(s->said, sizeof s->said, "%s", cleared ? "The vines have withered." :
-                         "The pump feeds water to the vines. Its lid is open.");
-                return PE_RE_SAID;
-            }
             const unsigned index = trigger.data[1] & 0x7f;
             if (pe_re_message(s->logic, index, s->said, sizeof s->said)) continue;
             return PE_RE_SAID;
@@ -365,31 +394,32 @@ PeReChange pe_re_session_tick(PeReSession *s) {
     return PE_RE_STAY;
 }
 
-static int at_terrarium_pump(const PeReSession *s) {
-    if (!s->logic || s->logic->game != PE_IMP_RE1 || s->stage != 0 || s->room != PE_RE1_TERRARIUM_ROOM ||
-        pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED)) return 0;
+static const Re1ItemUse *re1_item_use_at(const PeReSession *s, uint16_t item) {
+    if (!s->logic || s->logic->game != PE_IMP_RE1 || s->stage != 0) return NULL;
     uint32_t count = 0;
     pe_imp_logic_section(s->logic, PE_IMP_LOGIC_TRIG, &count, NULL);
     double fx, fz;
     pe_re_front(s->x, s->z, s->facing, &fx, &fz);
     for (uint32_t i = 0; i < count; i++) {
         PeImpTrigger t;
-        if (!pe_imp_logic_trigger(s->logic, i, &t) && is_terrarium_pump(s, &t) && pe_re_scd_live(&s->run, t.at) &&
-            (pe_re_in_quad(t.zone.x, t.zone.z, s->x, s->z) || pe_re_in_quad(t.zone.x, t.zone.z, fx, fz)))
-            return 1;
+        if (pe_imp_logic_trigger(s->logic, i, &t) || !pe_re_scd_live(&s->run, t.at)) continue;
+        const Re1ItemUse *use = re1_item_use(s, &t);
+        if (use && use->item == item && !re1_use_done(s, use->done) &&
+            (pe_re_in_quad(t.zone.x, t.zone.z, s->x, s->z) || pe_re_in_quad(t.zone.x, t.zone.z, fx, fz))) return use;
     }
-    return 0;
+    return NULL;
 }
 
 PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
     char name[48];
     s->said[0] = 0;
     if (!s->game || !pe_re_has(&s->progress, item)) return PE_RE_STAY;
-    if (item == PE_RE1_CHEMICAL && at_terrarium_pump(s)) {
+    const Re1ItemUse *use = re1_item_use_at(s, item);
+    if (use) {
         pe_re_lose(&s->progress, item, 1);
-        pe_re_flag_set(&s->progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED, 1);
+        pe_re_flag_set(&s->progress.flags, PE_RE1_FG_PREVIEW, use->done, 1);
         s->uses++;
-        snprintf(s->said, sizeof s->said, "The chemical killed the vines.");
+        snprintf(s->said, sizeof s->said, "%s", use->result);
         return PE_RE_SAID;
     }
     if (!pe_re_flag(&s->progress.flags, PE_RE_FG_USE, item)) {   /* the status screen's "can't use it here" */

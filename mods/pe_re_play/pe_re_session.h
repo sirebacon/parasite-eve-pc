@@ -119,6 +119,8 @@ int pe_re_session_defeated(PeReSession *s, uint8_t killed_flag);
  * scripts allow it here (flag group 10, Use_flg, its bit set) it becomes Use_id (work 2) for them
  * to act on (open the way, take the item); else PE_RE_SAID: "You can't use the Red Jewel here." */
 PeReChange pe_re_session_use(PeReSession *s, uint16_t item);
+/* The item this imported RE1 trigger can take, or zero. Used by the testing menu. */
+uint16_t pe_re1_item_for_trigger(const PeReSession *s, const PeImpTrigger *trigger);
 /* A frame of the room's scripts. PE_RE_SAID when one put up a message (`said`), PE_RE_ZONE when one
  * set off a zone the mod handles (aot_on), PE_RE_CAMERA when one cut to another camera (camera
  * zones stay out until it lets go); else PE_RE_STAY. */

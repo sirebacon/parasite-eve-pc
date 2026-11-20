@@ -28,11 +28,21 @@
 #define PE_RE1_INK_RIBBON 0x2F
 #define PE_RE1_CHEMICAL 0x26
 #define PE_RE1_ARMOR_KEY 0x34
+#define PE_RE1_WOOD_EMBLEM 0x1F
+#define PE_RE1_GOLD_EMBLEM 0x20
+#define PE_RE1_MUSIC_NOTES 0x23
+#define PE_RE1_SWORD_KEY 0x33
+#define PE_RE1_SHIELD_KEY 0x35
+#define PE_RE1_DINING_ROOM 0x05
 #define PE_RE1_TERRARIUM_ROOM 0x0C
+#define PE_RE1_PIANO_ROOM 0x0F
 /* Preview state in the existing save's flag bank, separate from source script flags. */
 #define PE_RE1_FG_PREVIEW 35
 #define PE_RE1_TERRARIUM_CLEARED 0
 #define PE_RE1_PICKUP_ZERO 1
+#define PE_RE1_PIANO_PLAYED 2
+#define PE_RE1_PIANO_EMBLEM_PLACED 3
+#define PE_RE1_CLOCK_OPEN 4
 #define PE_RE2_INK_RIBBON 0x1E                     /* a typewriter save takes one (SCE_AT.C Save_entrance) */
 #define PE_RE_LOCK_OTHER_SIDE 255
 
@@ -69,7 +79,8 @@ int pe_re_message(const PeImpRoomLogic *room, uint32_t index, char *out, size_t 
 typedef enum { PE_RE_DOOR_OPEN, PE_RE_DOOR_UNLOCKED, PE_RE_DOOR_LOCKED } PeReDoorAnswer;
 /* May the player go through? Unlocks it when they can (the bolt, or the key in the pocket); `say`
  * gets what to tell them ("" when the door is simply open). */
-PeReDoorAnswer pe_re_door_try(PeReProgress *p, const PeImpDoor *d, const PeImpRoomLogic *items, char *say, size_t n);
+PeReDoorAnswer pe_re_door_try(PeReProgress *p, const PeImpDoor *d, const PeImpRoomLogic *room,
+                              const PeImpRoomLogic *items, char *say, size_t n);
 
 /* `run`: what the room's scripts set up (pe_re_scd.h); NULL or not run: every record counts. A zone
  * is live when its instruction ran; aot_reset gives a zone id another kind and data (0: gone). */

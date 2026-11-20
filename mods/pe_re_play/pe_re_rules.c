@@ -94,7 +94,8 @@ int pe_re_message(const PeImpRoomLogic *room, uint32_t index, char *out, size_t 
 static int unlocked(const PeReProgress *p, uint8_t id) { return (p->unlocked[id >> 3] >> (id & 7)) & 1; }
 static void unlock(PeReProgress *p, uint8_t id) { p->unlocked[id >> 3] |= (uint8_t)(1u << (id & 7)); }
 
-PeReDoorAnswer pe_re_door_try(PeReProgress *p, const PeImpDoor *d, const PeImpRoomLogic *items, char *say, size_t n) {
+PeReDoorAnswer pe_re_door_try(PeReProgress *p, const PeImpDoor *d, const PeImpRoomLogic *room,
+                              const PeImpRoomLogic *items, char *say, size_t n) {
     char key[48];
     if (n) *say = 0;
     if ((!d->lock_id && !d->lock_type) || unlocked(p, d->lock_id)) return PE_RE_DOOR_OPEN;
@@ -106,6 +107,12 @@ PeReDoorAnswer pe_re_door_try(PeReProgress *p, const PeImpDoor *d, const PeImpRo
     if (d->lock_type == PE_RE_LOCK_OTHER_SIDE) {
         snprintf(say, n, "It's locked from the other side.");
         return PE_RE_DOOR_LOCKED;
+    }
+    /* The mansion preview starts after Barry gives Jill her lock pick. */
+    if (room && room->game == PE_IMP_RE1 && room->player == 1 && d->lock_type == PE_RE1_SWORD_KEY) {
+        unlock(p, d->lock_id);
+        snprintf(say, n, "Used the Lock Pick.");
+        return PE_RE_DOOR_UNLOCKED;
     }
     pe_re_item_name(items, d->lock_type, key, sizeof key);
     if (pe_re_has(p, d->lock_type)) {
@@ -144,6 +151,10 @@ int pe_re_pickup_gone(const PeImpRoomLogic *room, const PeReScdRun *run, const P
     if (room->game == PE_IMP_RE1) {
         if (room->stage == 0 && room->room == PE_RE1_TERRARIUM_ROOM && pk->item == PE_RE1_ARMOR_KEY &&
             !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED)) return 1;
+        if (room->stage == 0 && room->room == PE_RE1_PIANO_ROOM && pk->item == PE_RE1_GOLD_EMBLEM &&
+            !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_EMBLEM_PLACED)) return 1;
+        if (room->stage == 0 && room->room == PE_RE1_DINING_ROOM && pk->item == PE_RE1_SHIELD_KEY &&
+            !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_CLOCK_OPEN)) return 1;
         /* Old saves used item bit zero for any pickup. The real pickup zero gets its own bit. */
         const int saved = pk->flag ? pe_re_flag(&p->flags, PE_RE_FG_ITEM, pk->flag)
                                    : pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_PICKUP_ZERO);

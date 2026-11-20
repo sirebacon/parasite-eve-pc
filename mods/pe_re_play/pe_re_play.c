@@ -527,12 +527,19 @@ static void to_zone(uint32_t tag, int kind, const char *what) {
             zone = &pk.zone;
         } else if (tag == PE_IMP_LOGIC_TRIG) {
             if (pe_imp_logic_trigger(s_session.logic, i, &t) || !pe_re_scd_live(&s_session.run, t.at)) continue;
-            const int action = s_session.logic->game == PE_IMP_RE1 ? pe_re1_examine_kind(&t)
-                               : pe_re_zone_kind(&s_session.run, t.zone.id, t.zone.sce, t.data);
-            if (action != kind)
-                continue;
-            if (kind == PE_RE_ZONE_FLAG && ((t.data[0] | t.data[1] << 8) != PE_RE_FG_USE || !t.data[4])) continue;
-            if (kind == PE_RE_ZONE_FLAG) s_use_here = (uint16_t)(t.data[2] | t.data[3] << 8);
+            if (s_session.logic->game == PE_IMP_RE1 && kind == PE_RE_ZONE_FLAG) {
+                const uint16_t item = pe_re1_item_for_trigger(&s_session, &t);
+                if (!item) continue;
+                s_use_here = item;
+            } else {
+                const int action = s_session.logic->game == PE_IMP_RE1 ? pe_re1_examine_kind(&t)
+                                   : pe_re_zone_kind(&s_session.run, t.zone.id, t.zone.sce, t.data);
+                if (action != kind) continue;
+                if (kind == PE_RE_ZONE_FLAG) {
+                    if ((t.data[0] | t.data[1] << 8) != PE_RE_FG_USE || !t.data[4]) continue;
+                    s_use_here = (uint16_t)(t.data[2] | t.data[3] << 8);
+                }
+            }
             zone = &t.zone;
             front = (t.zone.sat & (PE_RE_SAT_UNDER | PE_RE_SAT_FRONT)) == PE_RE_SAT_FRONT;
         } else if (pe_imp_logic_door(s_session.logic, i, &d) || !pe_re_scd_live(&s_session.run, d.at) ||

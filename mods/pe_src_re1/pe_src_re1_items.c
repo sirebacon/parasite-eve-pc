@@ -23,7 +23,7 @@ static const char *const k_names[] = {
     "MO Disk", "Wind Crest", "Flare", "Slides",
     "Moon Crest", "Star Crest", "Sun Crest", "Ink Ribbon",
     "Lighter", "Lock Pick", "Nameless (Can of Oil)", "Sword Key",
-    "Armor Key", "Sheild Key", "Helmet Key", "Lab Key (1)",
+    "Armor Key", "Shield Key", "Helmet Key", "Lab Key (1)",
     "Special Key", "Dorm Key (002)", "Dorm Key (003)", "C. Room Key",
     "Lab Key (2)", "Small Key", "Red Book", "Doom Book (2)",
     "Doom Book (1)", "F-Aid Spray", "Serum", "Red Herb",
@@ -39,7 +39,7 @@ static int read_items(const uint8_t *data, uint32_t size, const char *path, PeIm
 const PeImpReader g_re1_items_ps1 = {
     .api = {PE_IMP_API_VERSION, sizeof(PeImpReader)},
     .game = "re1", .platform = "ps1", .format = "items",
-    .version = 2, .produces = PE_IMP_ITEMTABLE, .match = "*/DATA/ITEM_ALL.PIX",
+    .version = 3, .produces = PE_IMP_ITEMTABLE, .match = "*/DATA/ITEM_ALL.PIX",
     .tags = "items", .read = read_items
 };
 

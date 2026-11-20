@@ -154,6 +154,56 @@ static int re1_armor_route(PeReSession *s, const char *store) {
     return 1;
 }
 
+static int re1_shield_route(PeReSession *s, const char *store) {
+    static const unsigned to_piano[] = {0x104, 0x10f};
+    static const unsigned to_dining[] = {0x104, 0x105};
+    static const unsigned to_attic[] = {0x106, 0x203, 0x204, 0x20d, 0x20e};
+    char why[200] = "";
+    if (!re1_route_door(s, store, 0x105, PE_RE_ROOM)) return 0;
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 17900, 15000, NULL) < 0);
+    CHECK(pe_re_session_step(s, store, 2900, 8100, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_WOOD_EMBLEM));
+
+    if (!re1_route_walk(s, store, to_piano, sizeof to_piano / sizeof *to_piano)) return 0;
+    CHECK(strstr(s->said, "Lock Pick"));
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 8850, 19300, NULL) < 0);
+    pe_re_session_place(s, 8850, 19300, 0);
+    CHECK(pe_re_session_use(s, PE_RE1_WOOD_EMBLEM) == PE_RE_SAID && pe_re_has(&s->progress, PE_RE1_WOOD_EMBLEM));
+    CHECK(pe_re_session_step(s, store, 17400, 12000, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_MUSIC_NOTES));
+    CHECK(pe_re_session_use(s, PE_RE1_MUSIC_NOTES) == PE_RE_SAID && pe_re_has(&s->progress, PE_RE1_MUSIC_NOTES));
+    pe_re_session_place(s, 10500, 8050, 0);
+    CHECK(pe_re_session_use(s, PE_RE1_MUSIC_NOTES) == PE_RE_SAID && !pe_re_has(&s->progress, PE_RE1_MUSIC_NOTES));
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 8850, 19300, NULL) < 0);
+    pe_re_session_place(s, 8850, 19300, 0);
+    CHECK(pe_re_session_use(s, PE_RE1_WOOD_EMBLEM) == PE_RE_SAID && !pe_re_has(&s->progress, PE_RE1_WOOD_EMBLEM));
+    CHECK(pe_re_session_step(s, store, 8850, 19300, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_GOLD_EMBLEM));
+
+    if (!re1_route_walk(s, store, to_dining, sizeof to_dining / sizeof *to_dining)) return 0;
+    pe_re_session_place(s, 2900, 8100, 0);
+    CHECK(pe_re_session_use(s, PE_RE1_GOLD_EMBLEM) == PE_RE_SAID && !pe_re_has(&s->progress, PE_RE1_GOLD_EMBLEM));
+    CHECK(pe_re_session_step(s, store, 17900, 15000, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_SHIELD_KEY));
+    if (!re1_route_walk(s, store, to_attic, sizeof to_attic / sizeof *to_attic) ||
+        !re1_route_door(s, store, 0x210, PE_RE_ROOM)) return 0;
+    CHECK(strstr(s->said, "Shield Key") || strstr(s->said, "Sheild Key"));
+
+    uint8_t bytes[PE_RE_SAVE_SIZE];
+    PeReSaved saved;
+    pe_re_save_encode(s, 1, bytes);
+    CHECK(!pe_re_save_decode(bytes, &saved) && pe_re_has(&saved.progress, PE_RE1_SHIELD_KEY) &&
+          pe_re_flag(&saved.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_CLOCK_OPEN) &&
+          pe_re_flag(&saved.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_EMBLEM_PLACED));
+    PeReSession resumed;
+    if (pe_re_session_resume(&resumed, store, &saved, why, sizeof why)) return 0;
+    CHECK(re1_route_door(&resumed, store, 0x20e, PE_RE_ROOM) &&
+          re1_route_door(&resumed, store, 0x210, PE_RE_ROOM) && !resumed.said[0]);
+    pe_re_session_end(&resumed);
+    printf("RE1 Jill: Lock Pick, Piano Bar, emblem exchange, Shield Key and attic door reload\n");
+    return 1;
+}
+
 /* Jill's mansion hall exercises the RE1 importer through the portable session. The same
  * background is shared with Chris, but the door and collision records are Jill's variant. */
 static void re1_mansion(const char *cue) {
@@ -278,7 +328,9 @@ static void re1_mansion(const char *cue) {
     pe_re_session_end(&session);
 
     if (!pe_re_session_start(&session, store, game, 1, why, sizeof why)) {
-        CHECK(re1_armor_route(&session, store));
+        const int armor_route = re1_armor_route(&session, store);
+        CHECK(armor_route);
+        if (armor_route) CHECK(re1_shield_route(&session, store));
         pe_re_session_end(&session);
     } else CHECK(0);
 
@@ -522,15 +574,15 @@ int main(void) {
     char say[200];
     memset(&kd, 0, sizeof kd);
     kd.lock_id = 138, kd.lock_type = 88;
-    CHECK(pe_re_door_try(&pr, &kd, NULL, say, sizeof say) == PE_RE_DOOR_LOCKED && !strcmp(say, "It's locked. It needs the item 88."));
+    CHECK(pe_re_door_try(&pr, &kd, NULL, NULL, say, sizeof say) == PE_RE_DOOR_LOCKED && !strcmp(say, "It's locked. It needs the item 88."));
     CHECK(!pe_re_give(&pr, 88, 1) && pe_re_has(&pr, 88));
-    CHECK(pe_re_door_try(&pr, &kd, NULL, say, sizeof say) == PE_RE_DOOR_UNLOCKED && strstr(say, "Used the"));
-    CHECK(pe_re_door_try(&pr, &kd, NULL, say, sizeof say) == PE_RE_DOOR_OPEN && !*say);   /* stays open */
+    CHECK(pe_re_door_try(&pr, &kd, NULL, NULL, say, sizeof say) == PE_RE_DOOR_UNLOCKED && strstr(say, "Used the"));
+    CHECK(pe_re_door_try(&pr, &kd, NULL, NULL, say, sizeof say) == PE_RE_DOOR_OPEN && !*say);   /* stays open */
     PeImpDoor far = kd, near = kd;                              /* one lock, two sides */
     far.lock_id = near.lock_id = 131, far.lock_type = PE_RE_LOCK_OTHER_SIDE, near.lock_type = PE_RE_LOCK_BOLT;
-    CHECK(pe_re_door_try(&pr, &far, NULL, say, sizeof say) == PE_RE_DOOR_LOCKED && strstr(say, "other side"));
-    CHECK(pe_re_door_try(&pr, &near, NULL, say, sizeof say) == PE_RE_DOOR_UNLOCKED);
-    CHECK(pe_re_door_try(&pr, &far, NULL, say, sizeof say) == PE_RE_DOOR_OPEN);
+    CHECK(pe_re_door_try(&pr, &far, NULL, NULL, say, sizeof say) == PE_RE_DOOR_LOCKED && strstr(say, "other side"));
+    CHECK(pe_re_door_try(&pr, &near, NULL, NULL, say, sizeof say) == PE_RE_DOOR_UNLOCKED);
+    CHECK(pe_re_door_try(&pr, &far, NULL, NULL, say, sizeof say) == PE_RE_DOOR_OPEN);
     b = pe_imp_logic_begin(PE_IMP_RE2, 0, 0, 5);
     PeImpPickup pk[2];
     PeImpTrigger tg;
