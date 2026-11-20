@@ -149,12 +149,10 @@ static void free_masks(void) {
     s_mask_count = 0;
 }
 
-/* RE2 RID stores distance in the upper half of the projection word, in Q7 pixels.
- * Build a right/down/forward basis in the games' shared Y-down convention. */
+/* Build a right/down/forward basis in the games' shared Y-down convention. */
 static void prepare_camera(const PeImpRoomView *view) {
     s_camera.distance = 0;
-    if (view->game != PE_IMP_RE2) return;
-    int distance = view->projection >> 23;
+    const int distance = (int)pe_imp_room_projection(view);
     double x = (double)view->target[0] - view->eye[0];
     double y = (double)view->target[1] - view->eye[1];
     double z = (double)view->target[2] - view->eye[2];
@@ -181,7 +179,7 @@ static int blocked_here(double x, double z) {
 
 /* Prefer the ground under the middle of the view. Try nearby points on
  * the floor to avoid spawning inside a desk, staircase, or railing. */
-static int spawn_on_floor(void) {
+static int spawn_on_floor(int floor, int require_clear) {
     static const int offsets_y[] = {56, 72, 88, 40, 24, 4};
     static const int offsets_x[] = {0, -24, 24, -48, 48, -80, 80};
     const GteMatrix *m = &s_camera.view;
@@ -191,14 +189,14 @@ static int spawn_on_floor(void) {
         double sy = (double)offsets_y[i] / s_camera.distance;
         double ray_y = (m->m[2][1] + sy * m->m[1][1]) / 4096.0;
         if (fabs(ray_y) < 0.0001) continue;
-        double depth = (s_walk.y - s_camera.eye[1]) / ray_y;      /* where the ray meets this floor */
+        double depth = (-(double)floor * PE_RE2_FLOOR_HEIGHT - s_camera.eye[1]) / ray_y;      /* where the ray meets this floor */
         if (depth < 2200 || depth > 12000 * RE_UNITS_PER_PE_UNIT) continue;
         for (unsigned j = 0; j < sizeof offsets_x / sizeof *offsets_x; j++) {
             double sx = (double)offsets_x[j] / s_camera.distance;
             double x = s_camera.eye[0] + depth * (m->m[2][0] + sy * m->m[1][0] + sx * m->m[0][0]) / 4096.0;
             double z = s_camera.eye[2] + depth * (m->m[2][2] + sy * m->m[1][2] + sx * m->m[0][2]) / 4096.0;
             if (!fallback) fallback = 1, fx = x, fz = z;
-            if (blocked_here(x, z)) continue;
+            if (pe_imp_re2_blocked_on(&s_walk.collision, (unsigned)floor, x, z, AYA_ROOM_RADIUS)) continue;
             s_walk.x = x;
             s_walk.z = z;
             s_walk.ghost = 0;
@@ -206,7 +204,7 @@ static int spawn_on_floor(void) {
             return 1;
         }
     }
-    if (!fallback) return 0;
+    if (!fallback || require_clear) return 0;
     /* No free floor in view (the collision knows the ground floor only): stand on the first floor
      * point in view and walk without collision until clear, as after a door. */
     s_walk.x = fx, s_walk.z = fz, s_walk.ghost = 1;
@@ -482,26 +480,34 @@ int pe_re_stage_show(const char *room_id, const PeImpRoomLogic *logic, int camer
         if (why && n && !*why) snprintf(why, n, "%s isn't imported", room_id);
         return -1;
     }
-    const uint8_t *frame = pe_imp_imageset_frame(set, (uint32_t)camera, &size);
+    const int re1 = logic && logic->game == PE_IMP_RE1;
+    uint32_t frame_index = (uint32_t)camera;
+    PeImpRoomView view;
+    if (re1) {
+        for (frame_index = 0; frame_index < set->count; frame_index++)
+            if (!pe_imp_room_view(set, frame_index, &view) && view.game == PE_IMP_RE1 &&
+                view.slot == (uint32_t)camera) break;
+    }
+    const uint8_t *frame = pe_imp_imageset_frame(set, frame_index, &size);
     uint8_t *rgb = malloc(PIC_W * PIC_H * 3);
     uint16_t *pix = malloc(PIC_W * PIC_H * 2);
-    PeImpRoomView view;
     if (!frame) snprintf(why, n, "%s has no camera %d (%u views)", room_id, camera, set->count);
     else if (!rgb || !pix) snprintf(why, n, "out of memory");
     else if (set->width != PIC_W || set->height != PIC_H) snprintf(why, n, "not a 320 x 240 room picture");
-    else if (pe_imp_room_view(set, (uint32_t)camera, &view) || view.game != PE_IMP_RE2)
-        snprintf(why, n, "only RE2 cameras are drawn so far");
+    else if (pe_imp_room_view(set, frame_index, &view) || view.game != (re1 ? PE_IMP_RE1 : PE_IMP_RE2))
+        snprintf(why, n, "camera %d has no supported room data", camera);
     else if (pe_imp_mdec_decode(frame, size, PIC_W, PIC_H, rgb, why, n)) {}
     else {
-        s_view = camera;
+        s_view = (int)frame_index;
         prepare_camera(&view);
         uint32_t coll = 0;
         const uint8_t *data = logic ? pe_imp_logic_section(logic, PE_IMP_LOGIC_COLL, NULL, &coll) : NULL;
         if (!s_camera.distance) snprintf(why, n, "camera %d has no projection", camera);
-        else if ((!data || pe_imp_re2_collision_all(data, coll, &s_walk.collision)) &&
-                 pe_imp_re2_image_collision(set, &s_walk.collision))
-            snprintf(why, n, "%s has no collision", room_id);
-        else if (!place && !spawn_on_floor()) snprintf(why, n, "no free floor in camera %d", camera);
+        else if (re1 ? pe_imp_re1_collision(data, coll, &s_walk.collision)
+                     : ((!data || pe_imp_re2_collision_all(data, coll, &s_walk.collision)) &&
+                        pe_imp_re2_image_collision(set, &s_walk.collision)))
+            snprintf(why, n, "%s has no supported collision", room_id);
+        else if (!place && !spawn_on_floor(floor, re1)) snprintf(why, n, "no free floor in camera %d", camera);
         else {
             s_walk.floor = floor;
             s_walk.y = -(double)floor * PE_RE2_FLOOR_HEIGHT;

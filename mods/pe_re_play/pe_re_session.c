@@ -7,9 +7,9 @@
 #include "pe_re_zone.h"
 
 /* First rooms: RE2 and RE3 open in the street (room 1-00); RE1 in the mansion's main hall (1-06).
- * Only RE2 has the cameras and collision the runtime uses so far (design doc, phase 4). */
+ * RE1 has a ground-floor preview using its static collision records. */
 static const PeReGame k_games[PE_RE_GAMES] = {
-    {"re1", "Resident Evil", 0, 0x06, 0},
+    {"re1", "Resident Evil", 0, 0x06, 1},
     {"re2", "Resident Evil 2", 0, 0x00, 1},
     {"re3", "Resident Evil 3", 0, 0x00, 0},
 };

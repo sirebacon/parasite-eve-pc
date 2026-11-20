@@ -59,13 +59,22 @@ static void re1_mansion(const char *cue) {
     CHECK(session.logic->game == PE_IMP_RE1 && session.logic->player == 1);
     CHECK(session.stage == 0 && session.room == 6 && session.camera == 0);
     uint32_t bytes = 0;
-    CHECK(pe_imp_logic_section(session.logic, PE_IMP_LOGIC_COLL, NULL, &bytes) && bytes > 0);
+    const uint8_t *raw = pe_imp_logic_section(session.logic, PE_IMP_LOGIC_COLL, NULL, &bytes);
+    PeRe2RoomCollision walls;
+    CHECK(!pe_imp_re1_collision(raw, bytes, &walls));
+    CHECK(walls.count > 20 && !pe_imp_re2_blocked_on(&walls, 0, 12000, 22000, 280));
+    CHECK(pe_imp_re2_blocked_on(&walls, 0, 19500, 22000, 280));
+    double walk_x = 12000, walk_z = 22000;
+    pe_imp_re2_slide_on(&walls, 0, &walk_x, &walk_z, 8000, 0, 280);
+    CHECK(walk_x > 12000 && walk_x < 14500 && walk_z == 22000);
+    CHECK(bytes >= 12 && pe_imp_re1_collision(raw, bytes - 12, &walls) < 0 && walls.count == 0);
 
     PeImpImageSet *set = NULL;
     CHECK(!pe_imp_catalog_imageset(store, "re1:room/106", &set, why, sizeof why));
     if (set) {
         PeImpRoomView view;
         CHECK(!pe_imp_room_view(set, 0, &view) && view.game == PE_IMP_RE1 && view.slot == 0);
+        CHECK(pe_imp_room_projection(&view) == 230);
         free(set);
     }
 
@@ -100,7 +109,10 @@ static void re1_mansion(const char *cue) {
         entered = pe_re_session_step(&session, store, x, z, 1, why, sizeof why) == PE_RE_ROOM;
         if (entered) {
             CHECK(session.logic->player == 1 && session.doors_taken == 1);
-            CHECK(session.room == session.door.room && session.room != 6);
+            CHECK(session.room == session.door.room && session.room == 5);
+            raw = pe_imp_logic_section(session.logic, PE_IMP_LOGIC_COLL, NULL, &bytes);
+            CHECK(!pe_imp_re1_collision(raw, bytes, &walls));
+            CHECK(!pe_imp_re2_blocked_on(&walls, 0, session.x, session.z, 280));
             char id[PE_IMP_ID_MAX];
             pe_re_room_id("re1", session.stage, session.room, id, sizeof id);
             set = NULL;
@@ -307,7 +319,7 @@ int main(void) {
     CHECK(!strcmp(id, "re3:logic/210"));
     pe_re_room_id("re1", 0, 6, id, sizeof id);
     CHECK(!strcmp(id, "re1:room/106"));
-    CHECK(pe_re_game_named("re2")->playable && !pe_re_game_named("re1")->playable && !pe_re_game_named("dc1"));
+    CHECK(pe_re_game_named("re2")->playable && pe_re_game_named("re1")->playable && !pe_re_game_named("dc1"));
 
     CHECK(!re_headless_smoke(NULL, 0));
     const char *re1 = getenv("PE_TEST_RE1_DISC");

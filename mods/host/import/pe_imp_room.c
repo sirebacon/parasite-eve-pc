@@ -260,6 +260,47 @@ int pe_imp_re2_collision(const uint8_t *sca, uint32_t size, PeRe2RoomCollision *
     return pe_imp_re2_collision_floor(sca, size, 0, out);
 }
 
+unsigned pe_imp_room_projection(const PeImpRoomView *view) {
+    if (view->game == PE_IMP_RE1) return view->projection & 0xffffu;
+    if (view->game == PE_IMP_RE2) return view->projection >> 23;
+    return 0;
+}
+
+/* RE1 has five counted lists of 12-byte records after its 24-byte SCA header.
+ * Unlike RE2, the record contains both corners. Unwrap the corners around the
+ * room's origin before ordering them, so a positive wall past 32767 does
+ * not turn into a rectangle covering the entire mansion hall. */
+int pe_imp_re1_collision(const uint8_t *sca, uint32_t size, PeRe2RoomCollision *out) {
+    out->count = 0;
+    if (!sca) return 1;
+    enum { HEADER = 24, RECORD = 12, LISTS = 5 };
+    if (size < HEADER) return -1;
+    const uint32_t capacity = (size - HEADER) / RECORD;
+    uint32_t count = 0;
+    for (unsigned i = 0; i < LISTS; i++) {
+        const uint32_t entries = le32(sca + 4 + 4 * i);
+        if (entries > capacity - count || entries > PE_RE2_COLLIDER_MAX - count) return -1;
+        count += entries;
+    }
+
+    const int32_t x_origin = signed16(le16(sca)), z_origin = signed16(le16(sca + 2));
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *entry = sca + HEADER + i * RECORD;
+        const unsigned shape = entry[8];
+        if (shape != 1 && shape != 3) continue;
+        const int32_t x0 = x_origin + signed16((le16(entry) - (uint32_t)x_origin) & 0xffffu);
+        const int32_t z0 = z_origin + signed16((le16(entry + 2) - (uint32_t)z_origin) & 0xffffu);
+        const int32_t x1 = x_origin + signed16((le16(entry + 4) - (uint32_t)x_origin) & 0xffffu);
+        const int32_t z1 = z_origin + signed16((le16(entry + 6) - (uint32_t)z_origin) & 0xffffu);
+        if (x0 == x1 || z0 == z1) continue;
+        out->entries[out->count++] = (PeRe2Collider){
+            x0 < x1 ? x0 : x1, z0 < z1 ? z0 : z1,
+            x0 < x1 ? x1 : x0, z0 < z1 ? z1 : z0, shape == 3 ? 6 : 0, 0, 1
+        };
+    }
+    return out->count ? 0 : 1;
+}
+
 static int collision(const uint8_t *sca, uint32_t size, unsigned floor, int all, PeRe2RoomCollision *out) {
     out->count = 0;
     if (!sca) return 1;

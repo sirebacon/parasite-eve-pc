@@ -57,6 +57,13 @@ typedef struct {
     PeRe2Collider entries[PE_RE2_COLLIDER_MAX];
 } PeRe2RoomCollision;
 
+/* RE1 retail SCA: normalize its ground-floor walls to the shared walk/slide shapes.
+ * Rectangles and round posts are supported. Stair and vertical behaviour are separate. */
+int pe_imp_re1_collision(const uint8_t *sca, uint32_t size, PeRe2RoomCollision *out);
+
+/* Camera distance in pixels for RE1 and RE2. Zero for missing or unsupported views. */
+unsigned pe_imp_room_projection(const PeImpRoomView *view);
+
 int pe_imp_re2_collision(const uint8_t *sca, uint32_t size, PeRe2RoomCollision *out);
 int pe_imp_re2_collision_floor(const uint8_t *sca, uint32_t size, unsigned floor, PeRe2RoomCollision *out);
 /* Every floor's entries, for walking between floors: the _on calls below pick a floor's walls. */

@@ -306,7 +306,7 @@ static void start(void) {
     stop();
     if (s_pick >= s_offers) { snprintf(s_status, sizeof s_status, "Import a game first (F1 > Import)."); return; }
     if (!s_offer[s_pick]->playable) {
-        snprintf(s_status, sizeof s_status, "%s isn't playable yet: only RE2 rooms are.", s_offer[s_pick]->title);
+        snprintf(s_status, sizeof s_status, "%s isn't playable yet.", s_offer[s_pick]->title);
         return;
     }
     if (pe_re_session_start(&s_session, s_store, s_offer[s_pick], (uint32_t)s_player, why, sizeof why)) {
@@ -604,7 +604,7 @@ static int init(void) {
     pe_menu_top_page(PAGE, "Walk the rooms of a game you imported, as Aya.", 63);
     pe_menu_register_dynamic_choice(0, "Game", "A game imported from your own disc (F1 > Import).", &s_pick,
                                     PE_RE_GAMES, game_count, game_name);
-    pe_menu_register_int(0, "Scenario", "RE2: 0 Leon, 1 Claire.", &s_player, 0, 1, 1);
+    pe_menu_register_int(0, "Scenario", "RE1: 0 Chris, 1 Jill. RE2: 0 Leon, 1 Claire.", &s_player, 0, 1, 1);
     pe_menu_register_toggle(0, "Foreground", "Let the room's foreground cover Aya.", &s_masks, NULL);
     pe_menu_register_int(0, "Aya's size", "Percent of an RE person's height (100: as tall as Leon).", &s_size, 50, 200, 5);
     pe_menu_register_action(0, "Start", "Starts in the game's first room. Walk with the pad; Cross in a doorway goes through.", start);
