@@ -142,9 +142,12 @@ static int live(const PeReScdRun *run, uint32_t at) { return !run || pe_re_scd_l
 int pe_re_pickup_gone(const PeImpRoomLogic *room, const PeReScdRun *run, const PeReProgress *p, const PeImpPickup *pk) {
     if (!pk->item) return 1;
     if (room->game == PE_IMP_RE1) {
-        /* Earlier imports assigned flag zero to every RE1 pickup. An old save can only
-         * identify the room, so retain its room-wide suppression for that room. */
-        return was_taken(p, taken_key(room, 0)) || was_taken(p, taken_key(room, RE1_PICKUP_KEY_BASE | pk->flag));
+        if (room->stage == 0 && room->room == PE_RE1_TERRARIUM_ROOM && pk->item == PE_RE1_ARMOR_KEY &&
+            !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED)) return 1;
+        /* Old saves used item bit zero for any pickup. The real pickup zero gets its own bit. */
+        const int saved = pk->flag ? pe_re_flag(&p->flags, PE_RE_FG_ITEM, pk->flag)
+                                   : pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_PICKUP_ZERO);
+        return saved || was_taken(p, taken_key(room, 0)) || was_taken(p, taken_key(room, RE1_PICKUP_KEY_BASE | pk->flag));
     }
     return was_taken(p, taken_key(room, pk->flag)) ||
            (run && run->ran && pe_re_flag(&p->flags, PE_RE_FG_ITEM, pk->flag));
@@ -175,6 +178,8 @@ int pe_re_take(PeReProgress *p, const PeImpRoomLogic *room, const PeImpPickup *p
     }
     p->taken[p->ntaken++] = taken_key(room, room->game == PE_IMP_RE1 ? RE1_PICKUP_KEY_BASE | pk->flag : pk->flag);
     pe_re_flag_set(&p->flags, PE_RE_FG_ITEM, pk->flag, 1);
+    if (room->game == PE_IMP_RE1 && !pk->flag)
+        pe_re_flag_set(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_PICKUP_ZERO, 1);
     if (pk->count > 1) snprintf(say, n, "Picked up %u %s.", (unsigned)pk->count, name);
     else snprintf(say, n, "Picked up the %s.", name);
     return 0;

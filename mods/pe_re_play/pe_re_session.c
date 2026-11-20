@@ -127,8 +127,12 @@ static int load(PeReSession *s, const char *store, uint32_t stage, uint32_t room
     PeImpRoomLogic *l = NULL;
     pe_re_logic_id(s->game->game, stage, room, s->player, id, sizeof id);
     if (pe_imp_catalog_roomlogic(store, id, &l, why, n)) {
-        if (why && n && !*why) snprintf(why, n, "%s isn't imported", id);
-        return -1;
+        /* RE1 stores shared rooms in ROOMxxx0.RDT. A Jill-specific room wins whenever present. */
+        if (s->game != pe_re_game_named("re1") || s->player != 1) return -1;
+        pe_re_logic_id(s->game->game, stage, room, 0, id, sizeof id);
+        if (pe_imp_catalog_roomlogic(store, id, &l, NULL, 0)) return -1;
+        l->player = s->player;
+        if (why && n) *why = 0;
     }
     free(s->logic);
     s->logic = l, s->stage = stage, s->room = room;
@@ -177,7 +181,12 @@ void pe_re_session_place(PeReSession *s, double x, double z, int facing) {
 
 /* Through door `d`: locked says why; else the next room, placed as the door says. */
 static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *d, char *why, size_t n) {
-    if (pe_re_door_try(&s->progress, d, s->items, s->said, sizeof s->said) == PE_RE_DOOR_LOCKED) return PE_RE_SAID;
+    const unsigned lock_byte = d->lock_id >> 3;
+    const uint8_t previous_locks = s->progress.unlocked[lock_byte];
+    s->said[0] = 0;
+    /* In RE1, key type zero permits passage even when the source door carries a lock ID. */
+    if ((s->logic->game != PE_IMP_RE1 || d->lock_type) &&
+        pe_re_door_try(&s->progress, d, s->items, s->said, sizeof s->said) == PE_RE_DOOR_LOCKED) return PE_RE_SAID;
     const uint32_t stage = d->stage == PE_RE_STAGE_HERE ? s->stage : d->stage;
     if (!pe_re_session_enter(s, store, stage, d->room, d->camera, d->next_x, d->next_z, pe_re_facing_of(d->next_dir), why, n)) {
         s->floor = pe_re_floor_of(d->next_y);
@@ -185,7 +194,9 @@ static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *
         s->doors_taken++;
         return PE_RE_ROOM;
     }
-    return s->said[0] ? PE_RE_SAID : PE_RE_STAY;
+    s->progress.unlocked[lock_byte] = previous_locks;
+    s->said[0] = 0;
+    return PE_RE_STAY;
 }
 
 static PeReChange say_message(PeReSession *s, const uint8_t data[6]) {
@@ -233,6 +244,12 @@ static PeReChange zone_act(PeReSession *s, const char *store, const PeReZoneHit 
     }
 }
 
+/* The Terrarium pump's imported examine zone (ROOM10C, AOT 1). */
+static int is_terrarium_pump(const PeReSession *s, const PeImpTrigger *t) {
+    return s->stage == 0 && s->room == PE_RE1_TERRARIUM_ROOM && t->zone.id == 1 &&
+           pe_re1_examine_kind(t) == PE_RE_ZONE_MESSAGE;
+}
+
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */
 static PeReChange re1_examine(PeReSession *s, double x, double z) {
     uint32_t count = 0;
@@ -247,6 +264,12 @@ static PeReChange re1_examine(PeReSession *s, double x, double z) {
                       !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)))
             continue;
         if (kind == PE_RE_ZONE_MESSAGE) {
+            if (is_terrarium_pump(s, &trigger)) {
+                const int cleared = pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED);
+                snprintf(s->said, sizeof s->said, "%s", cleared ? "The vines have withered." :
+                         "The pump feeds water to the vines. Its lid is open.");
+                return PE_RE_SAID;
+            }
             const unsigned index = trigger.data[1] & 0x7f;
             if (pe_re_message(s->logic, index, s->said, sizeof s->said)) continue;
             return PE_RE_SAID;
@@ -342,10 +365,33 @@ PeReChange pe_re_session_tick(PeReSession *s) {
     return PE_RE_STAY;
 }
 
+static int at_terrarium_pump(const PeReSession *s) {
+    if (!s->logic || s->logic->game != PE_IMP_RE1 || s->stage != 0 || s->room != PE_RE1_TERRARIUM_ROOM ||
+        pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED)) return 0;
+    uint32_t count = 0;
+    pe_imp_logic_section(s->logic, PE_IMP_LOGIC_TRIG, &count, NULL);
+    double fx, fz;
+    pe_re_front(s->x, s->z, s->facing, &fx, &fz);
+    for (uint32_t i = 0; i < count; i++) {
+        PeImpTrigger t;
+        if (!pe_imp_logic_trigger(s->logic, i, &t) && is_terrarium_pump(s, &t) && pe_re_scd_live(&s->run, t.at) &&
+            (pe_re_in_quad(t.zone.x, t.zone.z, s->x, s->z) || pe_re_in_quad(t.zone.x, t.zone.z, fx, fz)))
+            return 1;
+    }
+    return 0;
+}
+
 PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
     char name[48];
     s->said[0] = 0;
     if (!s->game || !pe_re_has(&s->progress, item)) return PE_RE_STAY;
+    if (item == PE_RE1_CHEMICAL && at_terrarium_pump(s)) {
+        pe_re_lose(&s->progress, item, 1);
+        pe_re_flag_set(&s->progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED, 1);
+        s->uses++;
+        snprintf(s->said, sizeof s->said, "The chemical killed the vines.");
+        return PE_RE_SAID;
+    }
     if (!pe_re_flag(&s->progress.flags, PE_RE_FG_USE, item)) {   /* the status screen's "can't use it here" */
         pe_re_item_name(s->items, item, name, sizeof name);
         snprintf(s->said, sizeof s->said, "You can't use the %s here.", name);

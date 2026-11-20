@@ -72,16 +72,95 @@ static void re1_check_branches(void) {
     free(logic);
 }
 
+/* Steps on the imported door's action zone without changing rooms through the debug API. */
+static int re1_route_door(PeReSession *s, const char *store, unsigned target, PeReChange expected) {
+    uint32_t count = 0;
+    pe_imp_logic_section(s->logic, PE_IMP_LOGIC_DOOR, &count, NULL);
+    for (uint32_t i = 0; i < count; i++) {
+        PeImpDoor door;
+        if (pe_imp_logic_door(s->logic, i, &door) || !pe_re_scd_live(&s->run, door.at)) continue;
+        const unsigned stage = door.stage == PE_RE_STAGE_HERE ? s->stage : door.stage;
+        if (((stage + 1) << 8 | door.room) != target) continue;
+        double x = 0, z = 0;
+        for (int k = 0; k < 4; k++) x += door.zone.x[k] / 4.0, z += door.zone.z[k] / 4.0;
+        char why[200] = "";
+        const PeReChange change = pe_re_session_step(s, store, x, z, 1, why, sizeof why);
+        if (change == expected && expected != PE_RE_ROOM) return 1;
+        if (change == PE_RE_ROOM && expected == PE_RE_ROOM && s->stage == stage && s->room == door.room) {
+            char id[PE_IMP_ID_MAX];
+            pe_re_room_id("re1", s->stage, s->room, id, sizeof id);
+            PeImpImageSet *set = NULL;
+            PeImpRoomView view;
+            if (!pe_imp_catalog_imageset(store, id, &set, why, sizeof why)) {
+                const int ok = !pe_imp_room_view(set, (uint32_t)s->camera, &view);
+                free(set);
+                if (ok) return 1;
+                snprintf(why, sizeof why, "missing destination camera %d", s->camera);
+            }
+        }
+        printf("RE1 door to %03x: change %d, room %x%02x, %s %s\n",
+               target, change, (unsigned)s->stage + 1, (unsigned)s->room, s->said, why);
+        return 0;
+    }
+    printf("RE1 door to %03x missing from %x%02x\n", target, (unsigned)s->stage + 1, (unsigned)s->room);
+    return 0;
+}
+
+static int re1_route_walk(PeReSession *s, const char *store, const unsigned *rooms, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        if (!re1_route_door(s, store, rooms[i], PE_RE_ROOM)) return 0;
+    return 1;
+}
+
+static int re1_armor_route(PeReSession *s, const char *store) {
+    static const unsigned to_chemical[] = {0x203, 0x204, 0x206, 0x207, 0x10b, 0x118};
+    static const unsigned to_pump[] = {0x10b, 0x207, 0x204, 0x203, 0x202, 0x201, 0x101, 0x103, 0x10c};
+    static const unsigned to_hall[] = {0x103, 0x104, 0x105, 0x106};
+    char why[200] = "";
+    if (!re1_route_door(s, store, 0x111, PE_RE_SAID) || !strstr(s->said, "needs the Armor Key")) return 0;
+    if (!re1_route_walk(s, store, to_chemical, sizeof to_chemical / sizeof *to_chemical)) return 0;
+    if (pe_re_session_step(s, store, 3160, 3369, 1, why, sizeof why) != PE_RE_SAID ||
+        !pe_re_has(&s->progress, PE_RE1_CHEMICAL)) return 0;
+    if (!re1_route_walk(s, store, to_pump, sizeof to_pump / sizeof *to_pump)) return 0;
+
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 5400, 5500, NULL) < 0);
+    pe_re_session_step(s, store, 5400, 5500, 0, why, sizeof why);
+    CHECK(pe_re_session_use(s, PE_RE1_CHEMICAL) == PE_RE_SAID && pe_re_has(&s->progress, PE_RE1_CHEMICAL));
+    CHECK(pe_re_session_step(s, store, 16200, 5400, 1, why, sizeof why) == PE_RE_SAID && strstr(s->said, "pump"));
+    CHECK(pe_re_session_use(s, PE_RE1_CHEMICAL) == PE_RE_SAID && !pe_re_has(&s->progress, PE_RE1_CHEMICAL));
+    if (pe_re_session_step(s, store, 5400, 5500, 1, why, sizeof why) != PE_RE_SAID ||
+        !pe_re_has(&s->progress, PE_RE1_ARMOR_KEY)) return 0;
+    if (!re1_route_walk(s, store, to_hall, sizeof to_hall / sizeof *to_hall) ||
+        !re1_route_door(s, store, 0x111, PE_RE_ROOM) || !strstr(s->said, "Used the Armor Key") ||
+        s->logic->player != 1 || !re1_route_door(s, store, 0x106, PE_RE_ROOM)) return 0;
+
+    CHECK(pe_re_session_step(s, store, 14000, 17000, 1, why, sizeof why) == PE_RE_SAID);
+    CHECK(pe_re_session_step(s, store, 14000, 17000, 1, why, sizeof why) == PE_RE_ZONE && s->zone.sce == PE_RE_ZONE_SAVE);
+    uint8_t bytes[PE_RE_SAVE_SIZE];
+    PeReSaved saved;
+    PeReSession resumed;
+    pe_re_save_encode(s, 1, bytes);
+    if (pe_re_save_decode(bytes, &saved) || pe_re_session_resume(&resumed, store, &saved, why, sizeof why)) return 0;
+    CHECK(resumed.room == 6 && resumed.player == 1 && pe_re_has(&resumed.progress, PE_RE1_ARMOR_KEY));
+    CHECK(pe_re_pickup_at(resumed.logic, &resumed.run, &resumed.progress, 14000, 17000, NULL) < 0);
+    CHECK(re1_route_door(&resumed, store, 0x111, PE_RE_ROOM) && !resumed.said[0]);
+    static const unsigned back_to_pump[] = {0x106, 0x105, 0x104, 0x103, 0x10c};
+    if (re1_route_walk(&resumed, store, back_to_pump, sizeof back_to_pump / sizeof *back_to_pump)) {
+        CHECK(pe_re_pickup_at(resumed.logic, &resumed.run, &resumed.progress, 5400, 5500, NULL) < 0);
+        CHECK(pe_re_flag(&resumed.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_TERRARIUM_CLEARED));
+    } else CHECK(0);
+    pe_re_session_end(&resumed);
+    printf("RE1 Jill: mansion hall to Chemical, Terrarium, Armor Key, keyed door and save reload\n");
+    return 1;
+}
+
 /* Jill's mansion hall exercises the RE1 importer through the portable session. The same
  * background is shared with Chris, but the door and collision records are Jill's variant. */
 static void re1_mansion(const char *cue) {
     static const char store[] = "re1-jill-session-test/store";
-    static PeImpReader jill_logic;
-    jill_logic = g_re1_logic_ps1;
-    jill_logic.match = "*/STAGE?/ROOM*1.RDT";
     PeImpScan scan;
     pe_imp_registry_reset();
-    if (pe_imp_add_reader(&g_re1_rooms_ps1) || pe_imp_add_reader(&jill_logic) ||
+    if (pe_imp_add_reader(&g_re1_rooms_ps1) || pe_imp_add_reader(&g_re1_logic_ps1) ||
         pe_imp_add_reader(&g_re1_items_ps1) ||
         pe_imp_scan(store, cue, NULL, &scan)) {
         CHECK(0 && "RE1 mansion import failed");
@@ -92,7 +171,7 @@ static void re1_mansion(const char *cue) {
     PeReSession session;
     char why[200] = "";
     PeImpRoomLogic *chris = NULL;
-    CHECK(pe_imp_catalog_roomlogic(store, "re1:logic/106-0", &chris, NULL, 0) != 0);
+    CHECK(!pe_imp_catalog_roomlogic(store, "re1:logic/106-0", &chris, NULL, 0));
     free(chris);
     CHECK(pe_re_imported(store, game));
     if (pe_re_session_start(&session, store, game, 1, why, sizeof why)) {
@@ -144,7 +223,7 @@ static void re1_mansion(const char *cue) {
     int entered = 0;
     for (uint32_t i = 0; i < doors && !entered; i++) {
         PeImpDoor door;
-        if (pe_imp_logic_door(session.logic, i, &door) || door.lock_id || door.lock_type) continue;
+        if (pe_imp_logic_door(session.logic, i, &door) || door.room != 5 || door.lock_id || door.lock_type) continue;
         double x = 0, z = 0;
         for (int c = 0; c < 4; c++) {
             x += door.zone.x[c] / 4.0;
@@ -197,6 +276,11 @@ static void re1_mansion(const char *cue) {
     CHECK(session.zone.sce == PE_RE_ZONE_ITEMBOX);
     printf("RE1 Jill: examine, typewriter, item box, and two-way mansion stairs\n");
     pe_re_session_end(&session);
+
+    if (!pe_re_session_start(&session, store, game, 1, why, sizeof why)) {
+        CHECK(re1_armor_route(&session, store));
+        pe_re_session_end(&session);
+    } else CHECK(0);
 
     /* Jill's room 40F registers two triggers under the character flag check. */
     PeImpRoomLogic *variant = NULL;
@@ -261,12 +345,18 @@ static void re1_check_pickups(void) {
     char say[80];
     CHECK(!pe_imp_logic_pickup(logic, 0, &first) && first.flag == 0);
     CHECK(!pe_imp_logic_pickup(logic, 1, &second) && second.flag == 0x34);
+    pe_re_flag_set(&progress.flags, PE_RE_FG_ITEM, 0, 1);   /* ambiguous bit from an older save */
+    CHECK(!pe_re_pickup_gone(logic, NULL, &progress, &first));
     CHECK(!pe_re_take(&progress, logic, &first, NULL, say, sizeof say));
     CHECK(pe_re_pickup_at(logic, NULL, &progress, 50, 50, NULL) < 0);
     CHECK(pe_re_pickup_at(logic, NULL, &progress, 250, 50, &second) == 1);
     CHECK(!pe_re_take(&progress, logic, &second, NULL, say, sizeof say));
     CHECK(pe_re_pickup_at(logic, NULL, &progress, 250, 50, NULL) < 0);
 
+    progress.ntaken = 0;   /* the save retains flags rather than the in-memory pickup list */
+    CHECK(pe_re_pickup_gone(logic, NULL, &progress, &first));
+    CHECK(pe_re_pickup_gone(logic, NULL, &progress, &second));
+    pe_re_flag_set(&progress.flags, PE_RE_FG_ITEM, second.flag, 0);
     progress.taken[0] = 6u << 16;   /* room-only entry from an earlier preview save */
     progress.ntaken = 1;
     CHECK(pe_re_pickup_gone(logic, NULL, &progress, &second));

@@ -26,6 +26,13 @@
 #define PE_RE_SAT_CHECK 0x10u
 #define PE_RE_LOCK_BOLT 254
 #define PE_RE1_INK_RIBBON 0x2F
+#define PE_RE1_CHEMICAL 0x26
+#define PE_RE1_ARMOR_KEY 0x34
+#define PE_RE1_TERRARIUM_ROOM 0x0C
+/* Preview state in the existing save's flag bank, separate from source script flags. */
+#define PE_RE1_FG_PREVIEW 35
+#define PE_RE1_TERRARIUM_CLEARED 0
+#define PE_RE1_PICKUP_ZERO 1
 #define PE_RE2_INK_RIBBON 0x1E                     /* a typewriter save takes one (SCE_AT.C Save_entrance) */
 #define PE_RE_LOCK_OTHER_SIDE 255
 

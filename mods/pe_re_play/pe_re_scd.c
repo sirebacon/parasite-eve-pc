@@ -416,6 +416,11 @@ static void re1_branch(void *ctx, uint32_t proc, uint32_t at, const uint8_t *op,
         if (test[0] == 4 && test[1] == 0 && test[2] == 0 && test[3] <= 1) {
             known = 1;
             if (test[3] != (b->player != 0)) failed = 1;
+        } else if (test[0] == 4 && test[1] == 5 && test[2] == 0x2e && test[3] <= 1) {
+            /* Standard preview: 10C places the Armor Key, 118 places Chemical.
+             * Both use this condition to switch to their Arrange placements. */
+            known = 1;
+            if (test[3] != 1) failed = 1;
         } else {
             unknown = 1;
         }
