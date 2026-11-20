@@ -413,13 +413,14 @@ if(BUILD_TESTING)
     pe_feature_test(fit ${PROJECT_SOURCE_DIR}/tests/pe_mod_fit_test.c ${pe_import_sources})
     target_include_directories(test-mod-fit PRIVATE host/import)
     # The play session (pe_re_play): zones, cameras and doors on a made-up room; with PE_TEST_RE2_DISC,
-    # RE2's rooms walked door by door from the street.
+    # RE2's rooms walked door by door from the street; PE_TEST_RE1_DISC adds Jill's mansion hall.
     pe_feature_test(re-session ${PROJECT_SOURCE_DIR}/tests/pe_mod_re_session_test.c
         ${PROJECT_SOURCE_DIR}/tests/pe_re_headless_host.c
         $<TARGET_OBJECTS:pe-import-core> $<TARGET_OBJECTS:pe-re-play-core>
         pe_src_re2/pe_src_re2_logic.c pe_src_re2/pe_src_re2_rooms.c
-        pe_src_re2/pe_src_re2_pld.c pe_src_re2/pe_src_re2_items.c pe_src_re2/pe_src_re2_door.c)
-    target_include_directories(test-mod-re-session PRIVATE host host/import pe_src_re2 pe_re_play)
+        pe_src_re2/pe_src_re2_pld.c pe_src_re2/pe_src_re2_items.c pe_src_re2/pe_src_re2_door.c
+        pe_src_re1/pe_src_re1_logic.c pe_src_re1/pe_src_re1_rooms.c)
+    target_include_directories(test-mod-re-session PRIVATE host host/import pe_src_re1 pe_src_re2 pe_re_play)
     set_tests_properties(mod-re-session PROPERTIES TIMEOUT 600)
     # Model audit (not pass/fail): every Model on PE_TEST_RE1/2/3_DISC checked and measured into a CSV
     # (PE_AUDIT_OUT), to plan the model clean-up layer. Run by hand: build test-mod-model-audit, run it.

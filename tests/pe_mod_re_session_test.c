@@ -1,7 +1,7 @@
 /* The play session (mods/pe_re_play/pe_re_session.c), without the game: zones, camera switches and
  * doors on a made-up room; then, with PE_TEST_RE2_DISC, RE2 imported and walked door by door from
  * the street: every door must lead to an imported room that has the camera it names, and should
- * put the player on free floor. No disc data is kept. */
+ * put the player on free floor. PE_TEST_RE1_DISC exercises Jill's mansion hall and an exit. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +13,7 @@
 #include "pe_imp_room.h"
 #include "pe_re_save.h"
 #include "pe_re_session.h"
+#include "pe_src_re1.h"
 #include "pe_src_re2.h"
 
 int re_headless_smoke(const char *store, unsigned scenario);
@@ -27,6 +28,94 @@ static void rect(int16_t x[4], int16_t z[4], int x0, int z0, int x1, int z1) {
 
 #define ROOMS_MAX 512
 static const char *s_store = "pe-re-session-test/store";
+
+/* Jill's mansion hall exercises the RE1 importer through the portable session. The same
+ * background is shared with Chris, but the door and collision records are Jill's variant. */
+static void re1_mansion(const char *cue) {
+    static const char store[] = "re1-jill-session-test/store";
+    static PeImpReader jill_logic;
+    jill_logic = g_re1_logic_ps1;
+    jill_logic.match = "*/STAGE?/ROOM*1.RDT";
+    PeImpScan scan;
+    pe_imp_registry_reset();
+    if (pe_imp_add_reader(&g_re1_rooms_ps1) || pe_imp_add_reader(&jill_logic) ||
+        pe_imp_scan(store, cue, NULL, &scan)) {
+        CHECK(0 && "RE1 mansion import failed");
+        return;
+    }
+
+    const PeReGame *game = pe_re_game_named("re1");
+    PeReSession session;
+    char why[200] = "";
+    PeImpRoomLogic *chris = NULL;
+    CHECK(pe_imp_catalog_roomlogic(store, "re1:logic/106-0", &chris, NULL, 0) != 0);
+    free(chris);
+    CHECK(pe_re_imported(store, game));
+    if (pe_re_session_start(&session, store, game, 1, why, sizeof why)) {
+        printf("RE1 mansion start: %s\n", why);
+        CHECK(0);
+        return;
+    }
+    CHECK(session.logic->game == PE_IMP_RE1 && session.logic->player == 1);
+    CHECK(session.stage == 0 && session.room == 6 && session.camera == 0);
+    uint32_t bytes = 0;
+    CHECK(pe_imp_logic_section(session.logic, PE_IMP_LOGIC_COLL, NULL, &bytes) && bytes > 0);
+
+    PeImpImageSet *set = NULL;
+    CHECK(!pe_imp_catalog_imageset(store, "re1:room/106", &set, why, sizeof why));
+    if (set) {
+        PeImpRoomView view;
+        CHECK(!pe_imp_room_view(set, 0, &view) && view.game == PE_IMP_RE1 && view.slot == 0);
+        free(set);
+    }
+
+    uint32_t cuts = 0, doors = 0;
+    pe_imp_logic_section(session.logic, PE_IMP_LOGIC_CAMZ, &cuts, NULL);
+    pe_imp_logic_section(session.logic, PE_IMP_LOGIC_DOOR, &doors, NULL);
+    int switched = 0;
+    for (uint32_t i = 0; i < cuts && !switched; i++) {
+        PeImpCameraZone zone;
+        if (pe_imp_logic_camera_zone(session.logic, i, &zone) || zone.flag == 1 || zone.from == zone.to)
+            continue;
+        double x = 0, z = 0;
+        for (int c = 0; c < 4; c++) {
+            x += zone.x[c] / 4.0;
+            z += zone.z[c] / 4.0;
+        }
+        session.camera = zone.from;
+        switched = pe_re_session_step(&session, store, x, z, 0, why, sizeof why) == PE_RE_CAMERA;
+        if (switched) CHECK(session.camera == zone.to);
+    }
+    CHECK(switched);
+
+    int entered = 0;
+    for (uint32_t i = 0; i < doors && !entered; i++) {
+        PeImpDoor door;
+        if (pe_imp_logic_door(session.logic, i, &door) || door.lock_id || door.lock_type) continue;
+        double x = 0, z = 0;
+        for (int c = 0; c < 4; c++) {
+            x += door.zone.x[c] / 4.0;
+            z += door.zone.z[c] / 4.0;
+        }
+        entered = pe_re_session_step(&session, store, x, z, 1, why, sizeof why) == PE_RE_ROOM;
+        if (entered) {
+            CHECK(session.logic->player == 1 && session.doors_taken == 1);
+            CHECK(session.room == session.door.room && session.room != 6);
+            char id[PE_IMP_ID_MAX];
+            pe_re_room_id("re1", session.stage, session.room, id, sizeof id);
+            set = NULL;
+            CHECK(!pe_imp_catalog_imageset(store, id, &set, why, sizeof why));
+            if (set) {
+                CHECK(session.camera >= 0 && (uint32_t)session.camera < set->count);
+                free(set);
+            }
+            printf("RE1 Jill: mansion hall to %s, camera %d\n", id, session.camera);
+        }
+    }
+    if (!entered) printf("RE1 mansion door: %u records; %s\n", doors, why);
+    CHECK(entered);
+    pe_re_session_end(&session);
+}
 
 int main(void) {
     char why[200] = "";
@@ -221,6 +310,8 @@ int main(void) {
     CHECK(pe_re_game_named("re2")->playable && !pe_re_game_named("re1")->playable && !pe_re_game_named("dc1"));
 
     CHECK(!re_headless_smoke(NULL, 0));
+    const char *re1 = getenv("PE_TEST_RE1_DISC");
+    if (re1 && *re1) re1_mansion(re1);
     const char *re2 = getenv("PE_TEST_RE2_DISC");
     if (!re2 || !*re2) {
         printf("PE_TEST_RE2_DISC not set: the RE2 walk skipped\n");
