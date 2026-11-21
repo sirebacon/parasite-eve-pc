@@ -244,10 +244,13 @@ static int api_room(PeReRoomEvent *out) {
     return 0;
 }
 static int api_defeated(uint8_t killed_flag) {
-    if (!s_playing || !s_room_reported || !re_host()->room_active() || pe_re_door_busy()) return -1;
+    if (!s_playing || !s_room_reported || pe_re_door_busy() ||
+        (!s_battle_paused && !re_host()->room_active())) return -1;
     for (int i = 0; i < s_nenemies; i++) {
-        if (s_enemies[i].killed_flag == killed_flag)
-            return pe_re_session_defeated(&s_session, killed_flag);
+        if (s_enemies[i].killed_flag != killed_flag) continue;
+        if (pe_re_session_defeated(&s_session, killed_flag)) return -1;
+        if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);
+        return 0;
     }
     return -1;
 }

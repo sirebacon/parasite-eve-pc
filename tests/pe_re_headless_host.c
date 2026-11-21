@@ -191,18 +191,35 @@ static int play(unsigned scenario) {
     EXPECT(s.start && s.frame && s.save_read && s.new_game && s.scenario && s.api && s.progress);
     *s.scenario = (int)scenario;
     s.start();
-    frames(1, 0);
+    frames(30, 0);
     EXPECT(s.active && !strcmp(s.room, "re2:room/100") && !s.api->room(&room));
+    int flag = -1;
+    for (int i = 0; i < room.count && flag < 0; i++)
+        if (room.enemies[i].killed_flag != 0xFF) flag = room.enemies[i].killed_flag;
+    EXPECT(flag >= 0);
+    const int before = room.count;
     EXPECT(s.api->pause_for_battle() == 1 && s.backdrop && !s.active);
     s.api->resume_after_battle();
     frames(2, 0);
     EXPECT(!s.backdrop && s.active && !s.api->room(&room));
+    EXPECT(room.count == before);
+    EXPECT(s.api->pause_for_battle() == 1 && s.backdrop && !s.active);
+    EXPECT(s.api->defeated(0xFF) < 0);
+    EXPECT(!s.api->defeated((uint8_t)flag));
     PeReSaved saved;
     EXPECT(!pe_re_save_decode(s.progress->data, &saved) && saved.playing && saved.player == scenario);
+    EXPECT(pe_re_flag(&saved.progress.flags, PE_RE_FG_ENEMY, (unsigned)flag));
+    s.api->resume_after_battle();
+    frames(2, 0);
+    EXPECT(!s.backdrop && s.active && !s.api->room(&room));
+    EXPECT(room.count < before && s.placements == (unsigned)room.count);
+    for (int i = 0; i < room.count; i++) EXPECT(room.enemies[i].killed_flag != flag);
     s.save_read(NULL, NULL);
     EXPECT(!s.active);
-    frames(1, 0);
-    EXPECT(s.active && !strcmp(s.room, "re2:room/100"));
+    frames(30, 0);
+    EXPECT(s.active && !strcmp(s.room, "re2:room/100") && !s.api->room(&room));
+    EXPECT(room.count < before);
+    for (int i = 0; i < room.count; i++) EXPECT(room.enemies[i].killed_flag != flag);
 
     EXPECT(s.next_door);
     s.next_door();

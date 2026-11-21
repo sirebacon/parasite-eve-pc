@@ -408,7 +408,8 @@ typedef struct PeRePlayApi {
     uint32_t struct_size;
     /* The reported room and its placements (valid until the next frame); 0, or -1 if unavailable. */
     int (*room)(PeReRoomEvent *out);
-    /* Set a currently placed enemy's killed flag. The next room update reflects the defeat.
+    /* Set a currently placed enemy's killed flag, including while its room is paused for
+     * battle. The next room update reflects the defeat.
      * 0 on success, or -1 if the room or flag is unavailable or the flag is 0xFF. */
     int (*defeated)(uint8_t killed_flag);
     /* Optional in v1. Pause the imported room for a native battle trip. Returns 1 when
