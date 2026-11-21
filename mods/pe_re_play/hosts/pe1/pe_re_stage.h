@@ -34,6 +34,7 @@ void pe_re_stage_set_placements(const PeReEnemyPlacement *placements, int count)
  * everything (Aya too), and no walking while `hold`. */
 void pe_re_stage_fade(int shade, int curtain, int hold);
 void pe_re_stage_gesture(ReHostPose pose, unsigned frame, unsigned frames);
+void pe_re_stage_set_room_prop(const ReHostRoomProp *prop);
 /* Aya's size in the room, percent of an RE person's height (100: as tall as Leon). */
 void pe_re_stage_set_size(int percent);
 double pe_re_stage_scale(void);                    /* room units per PE unit, for the status line */

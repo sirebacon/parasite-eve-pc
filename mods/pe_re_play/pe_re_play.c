@@ -51,6 +51,29 @@ static unsigned s_gesture_frame, s_gesture_frames;
 static ReHostPose s_gesture_pose;
 static uint8_t s_gesture_cameras[PE_RE1_PIANO_CUTS];
 static int s_gesture_cuts;
+static ReHostRoomProp s_piano_panel;
+
+enum { PANEL_LIFT = 5400, PANEL_RISE_START = 35, PANEL_RISE_END = 51 };
+
+static void set_piano_panel(unsigned frame) {
+    const ReHost *host = re_host();
+    if (host->struct_size < sizeof *host || !host->set_room_prop) return;
+    if (!s_piano_panel.asset_id[0]) {
+        host->set_room_prop(NULL);
+        return;
+    }
+    ReHostRoomProp panel = s_piano_panel;
+    if (frame >= PANEL_RISE_END) panel.y -= PANEL_LIFT;
+    else if (frame > PANEL_RISE_START)
+        panel.y -= PANEL_LIFT * (int)(frame - PANEL_RISE_START) / (PANEL_RISE_END - PANEL_RISE_START);
+    host->set_room_prop(&panel);
+}
+
+static void show_piano_panel(void) {
+    if (!pe_re1_piano_panel(s_session.logic, &s_piano_panel)) s_piano_panel.asset_id[0] = 0;
+    const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED);
+    set_piano_panel(open ? PANEL_RISE_END : 0);
+}
 
 /* The event's camera order comes from the disc. The preview compresses the
  * performance into a short interaction while its other commands are unmapped. */
@@ -105,6 +128,7 @@ static void present_item_use(void) {
     s_gesture_frame = 0;
     s_gesture_frames = s_gesture_pose == RE_POSE_PIANO ? 52 : 22;
     s_gesture_cuts = s_gesture_pose == RE_POSE_PIANO && pe_re1_piano_cuts(s_session.logic, s_gesture_cameras);
+    if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(0);
     host->room_fade(128, 0, 1);
     host->player_gesture(s_gesture_pose, 0, s_gesture_frames);
     pe_mod_log(MOD_ID, "puzzle gesture: %s", s_gesture_pose == RE_POSE_PIANO ? "piano" : "reach");
@@ -305,6 +329,7 @@ static void show_room(int place) {
         s_playing = 0;
         return;
     }
+    show_piano_panel();
     re_host()->player_pose(&s_session.x, &s_session.z, &s_session.facing);
     snprintf(s_status, sizeof s_status, "Room %x-%02X, camera %d.", (unsigned)s_session.stage + 1,
              (unsigned)s_session.room, s_session.camera);
@@ -490,6 +515,7 @@ static int on_frame(void *ctx, void *user) {
                 for (unsigned i = 0; i < PE_RE1_PIANO_CUTS; i++)
                     if (s_gesture_frame == k_piano_cut_frames[i] && show_gesture_camera(s_gesture_cameras[i]))
                         pe_mod_log(MOD_ID, "puzzle camera: %u", (unsigned)s_gesture_cameras[i]);
+            if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(s_gesture_frame);
             re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
         }
         if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);

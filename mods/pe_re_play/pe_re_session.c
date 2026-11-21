@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "pe_imp_rdt.h"
 #include "pe_re_session.h"
 #include "pe_re_zone.h"
 
@@ -311,6 +312,35 @@ int pe_re1_piano_cuts(const PeImpRoomLogic *room, uint8_t cameras[PE_RE1_PIANO_C
     }
     memcpy(cameras, cuts, sizeof cuts);
     return 1;
+}
+
+static int re1_signed_word(const uint8_t *p) {
+    const unsigned word = (unsigned)p[0] | (unsigned)p[1] << 8;
+    return (int)word - (word >= 0x8000 ? 0x10000 : 0);
+}
+
+static void read_piano_panel(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
+    (void)proc;
+    (void)at;
+    ReHostRoomProp *panel = ctx;
+    /* OM_SET object 0, sliding panel type 0x35. Its model is section 2, entry 0. */
+    if (size != 28 || ins[0] != 0x1f || ins[1] != 0 || ins[2] != 0x35) return;
+    snprintf(panel->asset_id, sizeof panel->asset_id, "re1:object/10f-0");
+    panel->x = re1_signed_word(ins + 4);
+    panel->y = re1_signed_word(ins + 6);
+    panel->z = re1_signed_word(ins + 8);
+    panel->yaw = re1_signed_word(ins + 10) & 4095;
+}
+
+int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel) {
+    if (!room || room->game != PE_IMP_RE1 || room->stage != 0 || room->room != PE_RE1_PIANO_ROOM ||
+        room->player != 1) return 0;
+    uint32_t bytes = 0;
+    const uint8_t *rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &bytes);
+    if (!rdt) return 0;
+    memset(panel, 0, sizeof *panel);
+    pe_imp_scd_walk(PE_IMP_RE1, rdt, bytes, read_piano_panel, panel, NULL);
+    return panel->asset_id[0] != 0;
 }
 
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */

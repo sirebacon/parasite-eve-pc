@@ -99,7 +99,8 @@ static PeReEnemyPlacement s_placements[PE_RE_ENEMIES_MAX];
 static int s_placement_count;
 static RenderColorTrianglePacket s_marker_packets[2][PE_RE_ENEMIES_MAX][2];
 static RenderColorTrianglePacket s_placeholder_packets[2][PE_RE_ENEMIES_MAX][2];
-static RenderColorTrianglePacket s_mesh_packets[2][PE_RE_ENEMIES_MAX][FIELD_MESH_TRIANGLES];
+enum { FIELD_PROP_KIND = 0x40, FIELD_PROP_PACKET = PE_RE_ENEMIES_MAX };
+static RenderColorTrianglePacket s_mesh_packets[2][PE_RE_ENEMIES_MAX + 1][FIELD_MESH_TRIANGLES];
 typedef struct FieldTexturedTriangle {
     RenderNativeTag tag;
     RenderPacketColor color;
@@ -113,7 +114,7 @@ typedef struct FieldTexturedTriangle {
 } FieldTexturedTriangle;
 PE1_STATIC_ASSERT(PE1_OFFSETOF(FieldTexturedTriangle, pad) == sizeof(RenderNativeTag) + 26,
                   field_textured_triangle_layout);
-static FieldTexturedTriangle s_tex_packets[2][PE_RE_ENEMIES_MAX][FIELD_MESH_TRIANGLES];
+static FieldTexturedTriangle s_tex_packets[2][PE_RE_ENEMIES_MAX + 1][FIELD_MESH_TRIANGLES];
 static int s_texture_kind = -1, s_texture_checked;
 static uint16_t s_texture_words[FIELD_TEX_WORDS * FIELD_TEX_HEIGHT];
 static uint16_t s_texture_clut[FIELD_CLUT_ROWS][256];
@@ -125,7 +126,8 @@ static struct {
     unsigned first_page, first_palette;
     int16_t *idle;
     unsigned idle_frames, fps;
-} s_field_mesh[0x40];
+} s_field_mesh[FIELD_PROP_KIND + 1];
+static ReHostRoomProp s_room_prop;
 
 static struct {
     GteMatrix view;
@@ -634,8 +636,10 @@ static void prepare_field_texture(void) {
     if (s_texture_checked) return;
     s_texture_checked = 1;
     /* Pick one compatible model. All placements using it share a single atlas upload. */
-    int kind = -1;
-    for (int i = 0; i < s_placement_count; i++) {
+    const PeImpModel *prop = &s_field_mesh[FIELD_PROP_KIND].model;
+    int kind = s_room_prop.asset_id[0] && prop->parts && prop->h <= FIELD_TEX_HEIGHT &&
+               prop->pal_rows <= FIELD_CLUT_ROWS ? FIELD_PROP_KIND : -1;
+    for (int i = 0; kind < 0 && i < s_placement_count; i++) {
         const unsigned candidate = s_placements[i].kind;
         if (candidate >= 0x40) continue;
         const PeImpModel *model = &s_field_mesh[candidate].model;
@@ -682,6 +686,48 @@ static void load_field_idle(unsigned kind, const PeImpModel *model) {
     pe_imp_animation_free(&animation);
 }
 
+static void inspect_field_mesh(unsigned kind) {
+    const PeImpModel *model = &s_field_mesh[kind].model;
+    int64_t foot = INT64_MIN;
+    unsigned first_page = 16, first_palette = 512;
+    for (uint32_t b = 0; b < model->parts && b < model->bones; b++) {
+        const PeImpPart *part = &model->part[b];
+        for (int quad = 0; quad < 2; quad++) {
+            const PeImpFace *faces = quad ? part->quad : part->tri;
+            const uint32_t count = quad ? part->quads : part->tris;
+            const int offset = (quad ? part->quad_skin : part->tri_skin) ? 0 : model->pos[b][1];
+            for (uint32_t i = 0; i < count; i++) {
+                const unsigned page = faces[i].page & 15u, palette = faces[i].clut >> 6;
+                if (page < first_page) first_page = page;
+                if (palette < first_palette) first_palette = palette;
+                for (int v = 0; v < 3 + quad; v++) {
+                    const int64_t y = (int64_t)faces[i].v[v][1] + offset;
+                    if (y > foot) foot = y;
+                }
+            }
+        }
+    }
+    s_field_mesh[kind].foot_y = kind == FIELD_PROP_KIND || foot == INT64_MIN ? 0 : foot;
+    s_field_mesh[kind].first_page = first_page;
+    s_field_mesh[kind].first_palette = first_palette;
+}
+
+void pe_re_stage_set_room_prop(const ReHostRoomProp *prop) {
+    const char *asset = prop ? prop->asset_id : "";
+    if (strcmp(asset, s_room_prop.asset_id)) {
+        clear_field_texture();
+        free_field_mesh(FIELD_PROP_KIND);
+        if (*asset) {
+            PeImpModel *model = &s_field_mesh[FIELD_PROP_KIND].model;
+            if (!pe_imp_catalog_model(s_store, asset, model, NULL, 0)) {
+                inspect_field_mesh(FIELD_PROP_KIND);
+                pe_mod_log("pe_re_play", "room prop: loaded %s", asset);
+            }
+        }
+    }
+    s_room_prop = prop ? *prop : (ReHostRoomProp){0};
+}
+
 static void load_field_meshes(void) {
     int wanted[0x40] = {0};
     if (s_placement_meshes) {
@@ -699,28 +745,7 @@ static void load_field_meshes(void) {
         char id[PE_IMP_ID_MAX], why[160] = "";
         snprintf(id, sizeof id, "re2:enemy/em%02x", kind);
         if (pe_imp_catalog_model(s_store, id, model, why, sizeof why)) continue;
-        int64_t foot = INT64_MIN;
-        unsigned first_page = 16, first_palette = 512;
-        for (uint32_t b = 0; b < model->parts && b < model->bones; b++) {
-            const PeImpPart *part = &model->part[b];
-            for (int quad = 0; quad < 2; quad++) {
-                const PeImpFace *faces = quad ? part->quad : part->tri;
-                const uint32_t count = quad ? part->quads : part->tris;
-                const int offset = (quad ? part->quad_skin : part->tri_skin) ? 0 : model->pos[b][1];
-                for (uint32_t i = 0; i < count; i++) {
-                    const unsigned page = faces[i].page & 15u, palette = faces[i].clut >> 6;
-                    if (page < first_page) first_page = page;
-                    if (palette < first_palette) first_palette = palette;
-                    for (int v = 0; v < 3 + quad; v++) {
-                        const int64_t y = (int64_t)faces[i].v[v][1] + offset;
-                        if (y > foot) foot = y;
-                    }
-                }
-            }
-        }
-        s_field_mesh[kind].foot_y = foot == INT64_MIN ? 0 : foot;
-        s_field_mesh[kind].first_page = first_page;
-        s_field_mesh[kind].first_palette = first_palette;
+        inspect_field_mesh(kind);
         load_field_idle(kind, model);
     }
 }
@@ -733,6 +758,11 @@ static int on_import_published(void *ctx, void *user) {
     for (unsigned kind = 0; kind < 0x40; kind++)
         if (s_field_mesh[kind].tried) free_field_mesh(kind);
     if (s_placement_meshes) load_field_meshes();
+    if (s_room_prop.asset_id[0]) {
+        const ReHostRoomProp prop = s_room_prop;
+        s_room_prop.asset_id[0] = 0;
+        pe_re_stage_set_room_prop(&prop);
+    }
     return 0;
 }
 
@@ -805,9 +835,16 @@ static int field_face_texture(const PeImpModel *model, const PeImpFace *face, co
 static void draw_placement_meshes(RenderNativeTag *ordering, int slot, unsigned shade) {
     static const int split[2][3] = {{0, 1, 2}, {1, 3, 2}};
     const uint64_t vblanks = (uint32_t)Psyz_VideoVSync(-1);
-    for (int i = 0; i < s_placement_count; i++) {
-        const PeReEnemyPlacement *p = &s_placements[i];
-        if (p->kind >= 0x40) continue;
+    const PeReEnemyPlacement prop = {
+        .kind = FIELD_PROP_KIND, .x = s_room_prop.x, .y = s_room_prop.y, .z = s_room_prop.z,
+        .dir = (s_room_prop.yaw + 1024) & 4095
+    };
+    const int enemies = s_placement_meshes && !s_hold ? s_placement_count : 0;
+    const int have_prop = s_room_prop.asset_id[0] && s_field_mesh[FIELD_PROP_KIND].model.parts;
+    for (int next = 0; next < enemies + have_prop; next++) {
+        const int i = next < enemies ? next : FIELD_PROP_PACKET;
+        const PeReEnemyPlacement *p = next < enemies ? &s_placements[i] : &prop;
+        if (next < enemies && p->kind >= FIELD_PROP_KIND) continue;
         const PeImpModel *model = &s_field_mesh[p->kind].model;
         const double foot = (double)s_field_mesh[p->kind].foot_y;
         const double angle = pe_re_facing_of(p->dir) * FIELD_TURN_RADIANS;
@@ -967,7 +1004,7 @@ static int on_background(void *ctx, void *user) {
     for (int k = 0; k < 2; k++) quads[k].color.bytes.r = quads[k].color.bytes.g = quads[k].color.bytes.b = shade;
     link_quad(&ordering[ROOM_BACKGROUND_OT], &quads[0]);
     link_quad(&ordering[ROOM_BACKGROUND_OT], &quads[1]);
-    if (s_placement_meshes && !s_hold) {
+    if ((s_placement_meshes && !s_hold) || s_room_prop.asset_id[0]) {
         prepare_field_texture();
         draw_placement_meshes(ordering, b->slot, shade);
     }
@@ -1004,6 +1041,7 @@ static int on_scene(void *ctx, void *user) {
 }
 
 void pe_re_stage_hide(void) {
+    pe_re_stage_set_room_prop(NULL);
     s_shade = 128, s_curtain = s_hold = 0;
     clear_field_texture();
     if (s_original_picture) {
@@ -1085,6 +1123,7 @@ void pe_re_stage_init(const char *mod_id, const char *store) {
 }
 
 void pe_re_stage_shutdown(void) {
+    pe_re_stage_set_room_prop(NULL);
     s_show = s_walk.active = 0;
     clear_field_texture();
     for (unsigned kind = 0; kind < 0x40; kind++)

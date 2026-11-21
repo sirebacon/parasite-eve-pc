@@ -419,7 +419,8 @@ if(BUILD_TESTING)
         $<TARGET_OBJECTS:pe-import-core> $<TARGET_OBJECTS:pe-re-play-core>
         pe_src_re2/pe_src_re2_logic.c pe_src_re2/pe_src_re2_rooms.c
         pe_src_re2/pe_src_re2_pld.c pe_src_re2/pe_src_re2_items.c pe_src_re2/pe_src_re2_door.c
-        pe_src_re1/pe_src_re1_logic.c pe_src_re1/pe_src_re1_rooms.c pe_src_re1/pe_src_re1_items.c)
+        pe_src_re1/pe_src_re1_logic.c pe_src_re1/pe_src_re1_rooms.c pe_src_re1/pe_src_re1_items.c
+        pe_src_re1/pe_src_re1_objects.c)
     target_include_directories(test-mod-re-session PRIVATE host host/import pe_src_re1 pe_src_re2 pe_re_play)
     set_tests_properties(mod-re-session PROPERTIES TIMEOUT 600)
     # Model audit (not pass/fail): every Model on PE_TEST_RE1/2/3_DISC checked and measured into a CSV

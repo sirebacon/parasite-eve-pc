@@ -211,8 +211,11 @@ static void re1_mansion(const char *cue) {
     static const char store[] = "re1-jill-session-test/store";
     PeImpScan scan;
     pe_imp_registry_reset();
+    static PeImpReader piano_props;
+    piano_props = g_re1_objects_ps1;
+    piano_props.match = "*/STAGE1/ROOM10F1.RDT";
     if (pe_imp_add_reader(&g_re1_rooms_ps1) || pe_imp_add_reader(&g_re1_logic_ps1) ||
-        pe_imp_add_reader(&g_re1_items_ps1) ||
+        pe_imp_add_reader(&g_re1_items_ps1) || pe_imp_add_reader(&piano_props) ||
         pe_imp_scan(store, cue, NULL, &scan)) {
         CHECK(0 && "RE1 mansion import failed");
         return;

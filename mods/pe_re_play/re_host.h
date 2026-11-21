@@ -15,6 +15,11 @@ enum { RE_HOST_CROSS = 0x0040, RE_HOST_SQUARE = 0x0080 };
 
 typedef enum { RE_POSE_IDLE, RE_POSE_REACH, RE_POSE_PIANO } ReHostPose;
 
+typedef struct {
+    char asset_id[PE_IMP_ID_MAX];
+    int x, y, z, yaw;
+} ReHostRoomProp;
+
 /* Room IDs refer to the shared catalog. Positions are in RE room units.
  * A full turn is 4096 facing units, with 0 facing -z.
  * The adapter may resolve pictures, cameras and masks directly from that catalog.
@@ -62,6 +67,8 @@ typedef struct ReHost {
                            ReHostCallback new_game);
     /* Optional presentation. Frame counts are host frame ticks. IDLE releases the pose. */
     void (*player_gesture)(ReHostPose pose, unsigned frame, unsigned frames);
+    /* Optional. Copy a room-space model placement, or clear it when prop is NULL. */
+    void (*set_room_prop)(const ReHostRoomProp *prop);
 } ReHost;
 
 /* The host links exactly one implementation. The table lasts for the process. */

@@ -126,6 +126,8 @@ uint16_t pe_re1_item_for_trigger(const PeReSession *s, const PeImpTrigger *trigg
 #define PE_RE1_PIANO_CUTS 4
 /* Room10F Jill event 6: the CUT_SET cameras in source order. 0 if the event layout is unknown. */
 int pe_re1_piano_cuts(const PeImpRoomLogic *room, uint8_t cameras[PE_RE1_PIANO_CUTS]);
+/* Jill's Piano Bar alcove panel at its imported OM_SET placement. */
+int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel);
 /* A frame of the room's scripts. PE_RE_SAID when one put up a message (`said`), PE_RE_ZONE when one
  * set off a zone the mod handles (aot_on), PE_RE_CAMERA when one cut to another camera (camera
  * zones stay out until it lets go); else PE_RE_STAY. */

@@ -67,6 +67,24 @@ def test_puzzles(game):
             idle = game.work / "idle-piano.ppm"
             gesture = game.work / "gesture-piano.ppm"
             check(idle.read_bytes() != gesture.read_bytes(), "Piano pose did not change the rendered frame")
+            for _ in range(30):
+                if camera_prefix + "7" in log()[len(initial_log):]:
+                    break
+                game.adv(3)
+            shots = [line for line in log()[len(initial_log):].splitlines() if line.startswith(camera_prefix)]
+            check(shots[-1:] == [camera_prefix + "7"], "Alcove camera did not load")
+            game.adv(4)
+            game.raw("capture panel-low")
+            game.adv(6)
+            updated_shots = [line for line in log()[len(initial_log):].splitlines()
+                             if line.startswith(camera_prefix)]
+            check(updated_shots == shots, "Camera changed during the panel comparison")
+            game.raw("capture panel-rising")
+            low = (game.work / "panel-low.ppm").read_bytes()
+            rising = (game.work / "panel-rising.ppm").read_bytes()
+            changed = sum(a != b for a, b in zip(low, rising))
+            check(1000 < changed < len(low) // 4,
+                  "The panel's camera did not show a visible change")
         for _ in range(12):
             game.adv(16)
             if log().count("puzzle gesture: finished") > ends:
@@ -87,6 +105,7 @@ def test_puzzles(game):
     jump(5)
     pickup("Wood Emblem")
     jump(15)
+    check("room prop: loaded re1:object/10f-0" in log(), "Imported alcove panel did not load")
     pickup("Music Notes", 4)
     use("Music Notes", 1, "piano")
     use("Wood Emblem", 0, "reach")
