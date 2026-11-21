@@ -231,7 +231,13 @@ static void re1_dormitory_route(PeReSession *s, const char *store) {
     if (!re1_route_door(s, store, 0x401, PE_RE_ROOM)) { CHECK(0); return; }
     CHECK(pe_re_session_step(s, store, 10000, 13400, 1, why, sizeof why) == PE_RE_SAID &&
           pe_re_has(&s->progress, PE_RE1_RED_BOOK));
-    static const unsigned to_hall[] = {0x400, 0x405};
+    if (!re1_route_door(s, store, 0x402, PE_RE_ROOM)) { CHECK(0); return; }
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 2500, 3700, NULL) < 0);
+    CHECK(pe_re_session_step(s, store, 2500, 3700, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "drain the tub"));
+    CHECK(pe_re_session_step(s, store, 2500, 3700, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_CONTROL_KEY));
+    static const unsigned to_hall[] = {0x401, 0x400, 0x405};
     if (!re1_route_walk(s, store, to_hall, sizeof to_hall / sizeof *to_hall)) { CHECK(0); return; }
     pe_re_session_place(s, 24540, 21050, 3072);
     CHECK(pe_re_session_step(s, store, s->x, s->z, 1, why, sizeof why) == PE_RE_SAID &&
@@ -247,24 +253,42 @@ static void re1_dormitory_route(PeReSession *s, const char *store) {
     CHECK(strstr(s->said, "Used the Dorm Key (002)"));
     if (!re1_route_door(s, store, 0x407, PE_RE_ROOM)) { CHECK(0); return; }
     PeImpPickup pickup;
-    PeReScdRun standard;
-    pe_re_scd_run(s->logic, &s->progress.flags, NULL, &standard);
-    CHECK(standard.re1_setup && pe_re_pickup_at(s->logic, &standard, &s->progress, 7500, 6350, &pickup) >= 0 &&
-          pickup.item == 0x0b);
-    PeImpRoomLogic *basement = NULL;
-    if (!pe_imp_catalog_roomlogic(store, "re1:logic/410-0", &basement, why, sizeof why)) {
-        pe_re_scd_run(basement, &s->progress.flags, NULL, &standard);
-        CHECK(standard.re1_setup && pe_re_pickup_at(basement, &standard, &s->progress, 4450, 6820, &pickup) >= 0 &&
-              pickup.item == PE_RE1_DORM_KEY_003);
-        free(basement);
-    } else CHECK(0);
     CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 7500, 6350, &pickup) >= 0 &&
-          pickup.item == PE_RE1_DORM_KEY_003);
-    CHECK(pe_re_session_step(s, store, 7500, 6350, 1, why, sizeof why) == PE_RE_SAID &&
+          pickup.item == 0x0b);
+    if (!re1_route_door(s, store, 0x406, PE_RE_ROOM)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 10600, 8150, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "uncover a stairway"));
+    if (pe_re_session_step(s, store, 10600, 8150, 1, why, sizeof why) != PE_RE_ROOM ||
+        s->room != 0x0d || s->x != 3000 || s->z != 27800) { CHECK(0); return; }
+    CHECK(re1_route_door(s, store, 0x40e, PE_RE_SAID) && strstr(s->said, "make a bridge"));
+    pe_re_session_place(s, 27850, 16350, 0);
+    CHECK(pe_re_session_step(s, store, s->x, s->z, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "first crate"));
+    CHECK(pe_re_session_step(s, store, 27850, 19850, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "second crate"));
+    CHECK(re1_route_door(s, store, 0x40e, PE_RE_SAID));
+    uint8_t route_save[PE_RE_SAVE_SIZE];
+    PeReSaved bridge_save;
+    PeReSession bridge_resume;
+    pe_re_save_encode(s, 1, route_save);
+    if (pe_re_save_decode(route_save, &bridge_save) ||
+        pe_re_session_resume(&bridge_resume, store, &bridge_save, why, sizeof why)) { CHECK(0); return; }
+    pe_re_session_end(s);
+    *s = bridge_resume;
+    CHECK(pe_re_session_step(s, store, 7540, 21400, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "form a bridge"));
+    if (!re1_route_door(s, store, 0x40e, PE_RE_ROOM)) { CHECK(0); return; }
+    CHECK(re1_route_door(s, store, 0x410, PE_RE_SAID) && strstr(s->said, "water pressure"));
+    if (!re1_route_door(s, store, 0x411, PE_RE_ROOM)) { CHECK(0); return; }
+    CHECK(strstr(s->said, "Used the"));
+    CHECK(pe_re_session_step(s, store, 9050, 4850, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "recedes"));
+    static const unsigned to_closet[] = {0x40e, 0x410};
+    if (!re1_route_walk(s, store, to_closet, sizeof to_closet / sizeof *to_closet)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 4450, 6820, 1, why, sizeof why) == PE_RE_SAID &&
           pe_re_has(&s->progress, PE_RE1_DORM_KEY_003));
-    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 7500, 6350, NULL) < 0);
-
-    static const unsigned to_dorm_003[] = {0x406, 0x405, 0x408, 0x40a};
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 4450, 6820, NULL) < 0);
+    static const unsigned to_dorm_003[] = {0x40e, 0x40d, 0x406, 0x405, 0x408, 0x40a};
     if (!re1_route_walk(s, store, to_dorm_003, sizeof to_dorm_003 / sizeof *to_dorm_003)) { CHECK(0); return; }
     CHECK(strstr(s->said, "Used the Dorm Key (003)"));
     PeRe1EventPlan shelf_event;
@@ -292,12 +316,13 @@ static void re1_dormitory_route(PeReSession *s, const char *store) {
         return;
     }
     CHECK(!pe_re_has(&resumed.progress, PE_RE1_RED_BOOK));
+    CHECK(pe_re_flag(&resumed.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_AQUARIUM_DRAINED));
     CHECK(pe_re_session_step(&resumed, store, 15100, 5100, 1, why, sizeof why) == PE_RE_ROOM &&
           resumed.stage == 3 && resumed.room == 0x0c && resumed.x == 2800 && resumed.z == 13600);
     CHECK(re1_route_door(&resumed, store, 0x408, PE_RE_ROOM) &&
           re1_route_door(&resumed, store, 0x40a, PE_RE_ROOM) && !resumed.said[0]);
     pe_re_session_end(&resumed);
-    printf("RE1 Jill: Dorm 002 and 003 keys, Red Book, shelf passage and save reload\n");
+    printf("RE1 Jill: crate bridge reload, aquarium drain, Standard basement key, Red Book and Plant Room\n");
 }
 
 static void re1_guardhouse_route(PeReSession *s, const char *store) {

@@ -155,6 +155,8 @@ int pe_re_pickup_gone(const PeImpRoomLogic *room, const PeReScdRun *run, const P
             !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_EMBLEM_PLACED)) return 1;
         if (room->stage == 0 && room->room == PE_RE1_DINING_ROOM && pk->item == PE_RE1_SHIELD_KEY &&
             !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_CLOCK_OPEN)) return 1;
+        if (room->stage == PE_RE1_GUARDHOUSE_STAGE && room->room == PE_RE1_DORM_001_BATHROOM &&
+            pk->item == PE_RE1_CONTROL_KEY && !pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_DORM_TUB_DRAINED)) return 1;
         /* Old saves used item bit zero for any pickup. The real pickup zero gets its own bit. */
         const int saved = pk->flag ? pe_re_flag(&p->flags, PE_RE_FG_ITEM, pk->flag)
                                    : pe_re_flag(&p->flags, PE_RE1_FG_PREVIEW, PE_RE1_PICKUP_ZERO);

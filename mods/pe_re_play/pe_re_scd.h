@@ -137,6 +137,7 @@ enum { PE_RE1_EVENT_CUTS = 8 };
 typedef struct {
     struct { unsigned tick; uint8_t camera; } cuts[PE_RE1_EVENT_CUTS];
     unsigned count, duration;
+    const uint8_t *door_setup;  /* First unconditional DOOR_SET, borrowed from the room data. */
 } PeRe1EventPlan;
 
 /* Read the camera cuts and waits from a linear RE1 event. Returns 0 when the

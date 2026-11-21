@@ -565,11 +565,13 @@ static uint32_t re1_event_offset(const uint8_t *p) {
 static int re1_event_commands(const uint8_t *cmd, unsigned size, PeRe1EventPlan *plan) {
     int conditional = 0;
     const unsigned first_cut = plan->count;
+    const uint8_t *door = NULL;
     for (unsigned at = 0; at < size;) {
         const unsigned opcode = cmd[at];
         const unsigned width = pe_imp_scd_size(PE_IMP_RE1, (uint8_t)opcode);
         if (!width || width > size - at) return 0;
         if (opcode == RE1_IF || opcode == RE1_ELSE) conditional = 1;
+        if (opcode == RE1_DOOR_SET && !door) door = cmd + at;
         if (opcode == 9) {                           /* CUT_SET */
             if (plan->count >= PE_RE1_EVENT_CUTS) return 0;
             plan->cuts[plan->count].tick = plan->duration;
@@ -577,6 +579,7 @@ static int re1_event_commands(const uint8_t *cmd, unsigned size, PeRe1EventPlan 
         }
         at += width;
     }
+    if (!conditional && !plan->door_setup) plan->door_setup = door;
     return !conditional || plan->count == first_cut;
 }
 
