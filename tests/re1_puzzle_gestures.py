@@ -85,6 +85,20 @@ def test_puzzles(game):
             changed = sum(a != b for a, b in zip(low, rising))
             check(1000 < changed < len(low) // 4,
                   "The panel's camera did not show a visible change")
+        if item == "Gold Emblem":
+            for _ in range(10):
+                if "clock camera: 5" in log()[len(initial_log):]:
+                    break
+                game.adv(2)
+            check("clock camera: 5" in log()[len(initial_log):], "Dining Room clock camera did not load")
+            game.adv(4)
+            game.raw("capture clock-start")
+            game.adv(14)
+            game.raw("capture clock-sliding")
+            start = (game.work / "clock-start.ppm").read_bytes()
+            sliding = (game.work / "clock-sliding.ppm").read_bytes()
+            changed = sum(a != b for a, b in zip(start, sliding))
+            check(1000 < changed < len(start) // 4, f"The clock close-up changed {changed} color bytes")
         for _ in range(12):
             game.adv(16)
             if log().count("puzzle gesture: finished") > ends:
@@ -111,6 +125,7 @@ def test_puzzles(game):
     use("Wood Emblem", 0, "reach")
     pickup("Gold Emblem", 4)
     jump(5)
+    check("room prop: loaded re1:object/105-2" in log(), "Imported Dining Room clock did not load")
     use("Gold Emblem", 0, "reach")
     pickup("Shield Key", 3)
 

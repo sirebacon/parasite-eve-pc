@@ -128,6 +128,8 @@ uint16_t pe_re1_item_for_trigger(const PeReSession *s, const PeImpTrigger *trigg
 int pe_re1_piano_cuts(const PeImpRoomLogic *room, uint8_t cameras[PE_RE1_PIANO_CUTS]);
 /* Jill's Piano Bar alcove panel at its imported OM_SET placement. */
 int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel);
+/* Jill's Dining Room clock at the two positions from its OM_SET branches. */
+int pe_re1_dining_clock(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHostRoomProp *open);
 /* A frame of the room's scripts. PE_RE_SAID when one put up a message (`said`), PE_RE_ZONE when one
  * set off a zone the mod handles (aot_on), PE_RE_CAMERA when one cut to another camera (camera
  * zones stay out until it lets go); else PE_RE_STAY. */

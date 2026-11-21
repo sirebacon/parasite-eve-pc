@@ -52,27 +52,39 @@ static ReHostPose s_gesture_pose;
 static uint8_t s_gesture_cameras[PE_RE1_PIANO_CUTS];
 static int s_gesture_cuts;
 static ReHostRoomProp s_piano_panel;
+static ReHostRoomProp s_clock_closed, s_clock_open;
+static int s_clock_gesture, s_clock_cut;
 
 enum { PANEL_LIFT = 5400, PANEL_RISE_START = 35, PANEL_RISE_END = 51 };
+/* Room 105 camera 5 frames the clock. Hold it through the slide, then return to play. */
+enum { CLOCK_CAMERA = 5, CLOCK_CUT_FRAME = 12, CLOCK_SLIDE_END = 36, CLOCK_GESTURE_END = 44 };
+
+static void set_room_prop(const ReHostRoomProp *prop) {
+    const ReHost *host = re_host();
+    if (host->struct_size >= sizeof *host && host->set_room_prop)
+        host->set_room_prop(prop);
+}
 
 static void set_piano_panel(unsigned frame) {
-    const ReHost *host = re_host();
-    if (host->struct_size < sizeof *host || !host->set_room_prop) return;
-    if (!s_piano_panel.asset_id[0]) {
-        host->set_room_prop(NULL);
-        return;
-    }
+    if (!s_piano_panel.asset_id[0]) return;
     ReHostRoomProp panel = s_piano_panel;
     if (frame >= PANEL_RISE_END) panel.y -= PANEL_LIFT;
     else if (frame > PANEL_RISE_START)
         panel.y -= PANEL_LIFT * (int)(frame - PANEL_RISE_START) / (PANEL_RISE_END - PANEL_RISE_START);
-    host->set_room_prop(&panel);
+    set_room_prop(&panel);
 }
 
-static void show_piano_panel(void) {
-    if (!pe_re1_piano_panel(s_session.logic, &s_piano_panel)) s_piano_panel.asset_id[0] = 0;
-    const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED);
-    set_piano_panel(open ? PANEL_RISE_END : 0);
+static void show_room_prop(void) {
+    s_piano_panel.asset_id[0] = s_clock_closed.asset_id[0] = 0;
+    if (pe_re1_piano_panel(s_session.logic, &s_piano_panel)) {
+        const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED);
+        set_piano_panel(open ? PANEL_RISE_END : 0);
+    } else if (pe_re1_dining_clock(s_session.logic, &s_clock_closed, &s_clock_open)) {
+        const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_CLOCK_OPEN);
+        set_room_prop(open ? &s_clock_open : &s_clock_closed);
+    } else {
+        set_room_prop(NULL);
+    }
 }
 
 /* The event's camera order comes from the disc. The preview compresses the
@@ -114,19 +126,28 @@ static void cancel_gesture(void) {
     if (!s_gesture_frames) return;
     s_gesture_frames = 0;
     s_gesture_cuts = 0;
+    s_clock_gesture = s_clock_cut = 0;
     re_host()->player_gesture(RE_POSE_IDLE, 0, 0);
     re_host()->room_fade(128, 0, 0);
 }
 
-static void present_item_use(void) {
+static void present_item_use(uint16_t item) {
     const ReHost *host = re_host();
-    if (s_session.use_pose == RE_POSE_IDLE || host->struct_size < sizeof *host || !host->player_gesture) {
+    if (s_session.use_pose == RE_POSE_IDLE) {
+        say(s_session.said);
+        return;
+    }
+    const int moves_clock = item == PE_RE1_GOLD_EMBLEM && s_clock_closed.asset_id[0];
+    if (host->struct_size < sizeof *host || !host->player_gesture) {
+        if (moves_clock) set_room_prop(&s_clock_open);
         say(s_session.said);
         return;
     }
     s_gesture_pose = s_session.use_pose;
     s_gesture_frame = 0;
+    s_clock_gesture = moves_clock;
     s_gesture_frames = s_gesture_pose == RE_POSE_PIANO ? 52 : 22;
+    if (s_clock_gesture) s_gesture_frames = CLOCK_GESTURE_END;
     s_gesture_cuts = s_gesture_pose == RE_POSE_PIANO && pe_re1_piano_cuts(s_session.logic, s_gesture_cameras);
     if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(0);
     host->room_fade(128, 0, 1);
@@ -304,7 +325,7 @@ static void picked(void) {
     if (mode == PICK_USE) {
         char name[48];
         pe_re_item_name(s_session.items, s_pick_item[c], name, sizeof name);
-        if (pe_re_session_use(&s_session, s_pick_item[c]) == PE_RE_SAID) present_item_use();
+        if (pe_re_session_use(&s_session, s_pick_item[c]) == PE_RE_SAID) present_item_use(s_pick_item[c]);
         else snprintf(s_status, sizeof s_status, "Used the %s.", name);
         return;
     }
@@ -329,7 +350,7 @@ static void show_room(int place) {
         s_playing = 0;
         return;
     }
-    show_piano_panel();
+    show_room_prop();
     re_host()->player_pose(&s_session.x, &s_session.z, &s_session.facing);
     snprintf(s_status, sizeof s_status, "Room %x-%02X, camera %d.", (unsigned)s_session.stage + 1,
              (unsigned)s_session.room, s_session.camera);
@@ -506,7 +527,7 @@ static int on_frame(void *ctx, void *user) {
         s_cross_held = (buttons & RE_HOST_CROSS) != 0;
         s_square_held = (buttons & RE_HOST_SQUARE) != 0;
         if (++s_gesture_frame >= s_gesture_frames) {
-            if (s_gesture_cuts) show_gesture_camera(s_session.camera);
+            if (s_gesture_cuts || s_clock_cut) show_gesture_camera(s_session.camera);
             cancel_gesture();
             say(s_session.said);
             pe_mod_log(MOD_ID, "puzzle gesture: finished");
@@ -516,6 +537,16 @@ static int on_frame(void *ctx, void *user) {
                     if (s_gesture_frame == k_piano_cut_frames[i] && show_gesture_camera(s_gesture_cameras[i]))
                         pe_mod_log(MOD_ID, "puzzle camera: %u", (unsigned)s_gesture_cameras[i]);
             if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(s_gesture_frame);
+            if (s_clock_gesture && s_gesture_frame == CLOCK_CUT_FRAME) {
+                s_clock_cut = show_gesture_camera(CLOCK_CAMERA);
+                if (s_clock_cut) pe_mod_log(MOD_ID, "clock camera: %d", CLOCK_CAMERA);
+            }
+            if (s_clock_gesture && s_gesture_frame > CLOCK_CUT_FRAME && s_gesture_frame <= CLOCK_SLIDE_END) {
+                ReHostRoomProp clock = s_clock_open;
+                clock.x = s_clock_closed.x + (s_clock_open.x - s_clock_closed.x) *
+                          (int)(s_gesture_frame - CLOCK_CUT_FRAME) / (CLOCK_SLIDE_END - CLOCK_CUT_FRAME);
+                set_room_prop(&clock);
+            }
             re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
         }
         if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);

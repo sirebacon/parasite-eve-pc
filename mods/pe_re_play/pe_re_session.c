@@ -319,17 +319,20 @@ static int re1_signed_word(const uint8_t *p) {
     return (int)word - (word >= 0x8000 ? 0x10000 : 0);
 }
 
+static void read_room_prop(ReHostRoomProp *prop, const uint8_t *ins, const char *asset_id) {
+    snprintf(prop->asset_id, sizeof prop->asset_id, "%s", asset_id);
+    prop->x = re1_signed_word(ins + 4);
+    prop->y = re1_signed_word(ins + 6);
+    prop->z = re1_signed_word(ins + 8);
+    prop->yaw = re1_signed_word(ins + 10) & 4095;
+}
+
 static void read_piano_panel(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
     (void)proc;
     (void)at;
-    ReHostRoomProp *panel = ctx;
     /* OM_SET object 0, sliding panel type 0x35. Its model is section 2, entry 0. */
     if (size != 28 || ins[0] != 0x1f || ins[1] != 0 || ins[2] != 0x35) return;
-    snprintf(panel->asset_id, sizeof panel->asset_id, "re1:object/10f-0");
-    panel->x = re1_signed_word(ins + 4);
-    panel->y = re1_signed_word(ins + 6);
-    panel->z = re1_signed_word(ins + 8);
-    panel->yaw = re1_signed_word(ins + 10) & 4095;
+    read_room_prop(ctx, ins, "re1:object/10f-0");
 }
 
 int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel) {
@@ -341,6 +344,38 @@ int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel) {
     memset(panel, 0, sizeof *panel);
     pe_imp_scd_walk(PE_IMP_RE1, rdt, bytes, read_piano_panel, panel, NULL);
     return panel->asset_id[0] != 0;
+}
+
+typedef struct {
+    const uint8_t *rdt;
+    ReHostRoomProp closed, open;
+} Re1ClockPlacements;
+
+static void read_dining_clock(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
+    (void)proc;
+    Re1ClockPlacements *clock = ctx;
+    if (size != 28 || ins[0] != 0x1f || ins[1] != 2 || ins[2] != 1 || at < 4) return;
+    /* OM_SET object 2 follows the check for puzzle flag 1:AB, or its ELSE. */
+    static const uint8_t closed_check[] = {0x04, 0x01, 0xab, 0x00};
+    static const uint8_t open_else[] = {0x02, 0x1e};
+    if (!memcmp(clock->rdt + at - sizeof closed_check, closed_check, sizeof closed_check))
+        read_room_prop(&clock->closed, ins, "re1:object/105-2");
+    else if (clock->closed.asset_id[0] &&
+             !memcmp(clock->rdt + at - sizeof open_else, open_else, sizeof open_else))
+        read_room_prop(&clock->open, ins, "re1:object/105-2");
+}
+
+int pe_re1_dining_clock(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHostRoomProp *open) {
+    if (!room || room->game != PE_IMP_RE1 || room->stage != 0 || room->room != PE_RE1_DINING_ROOM ||
+        room->player != 1) return 0;
+    uint32_t bytes = 0;
+    Re1ClockPlacements clock = {.rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &bytes)};
+    if (!clock.rdt) return 0;
+    pe_imp_scd_walk(PE_IMP_RE1, clock.rdt, bytes, read_dining_clock, &clock, NULL);
+    if (!clock.closed.asset_id[0] || !clock.open.asset_id[0]) return 0;
+    *closed = clock.closed;
+    *open = clock.open;
+    return 1;
 }
 
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */

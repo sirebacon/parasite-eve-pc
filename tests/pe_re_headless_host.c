@@ -295,6 +295,35 @@ static int play_gesture(void) {
     s.save_read(NULL, NULL);
     frames(1, 0);
     EXPECT(!strcmp(s.room, "re1:room/10f") && s.prop.y == -5400);
+
+    *s.room_number = PE_RE1_DINING_ROOM;
+    s.jump();
+    frames(1, 0);
+    EXPECT(!strcmp(s.prop.asset_id, "re1:object/105-2") && s.prop.x == 16000 &&
+           s.prop.z == 14300 && s.prop.y == 0 && s.prop.yaw == 1024);
+    PeImpModel clock;
+    EXPECT(!pe_imp_catalog_model(s.store, s.prop.asset_id, &clock, NULL, 0));
+    EXPECT(clock.parts == 1);
+    pe_imp_model_free(&clock);
+    s.next_use();
+    s.give_use();
+    const int dining_camera = s.camera;
+    frames(1, RE_HOST_SQUARE);
+    EXPECT(s.busy);
+    s.busy = 0;
+    s.choice = 0;
+    frames(8, 0);
+    EXPECT(s.hold && s.gesture == RE_POSE_REACH && s.prop.x == 16000);
+    frames(16, 0);
+    EXPECT(s.hold && s.camera == 5 && s.prop.x > 16000 && s.prop.x < 18000);
+    frames(24, 0);
+    EXPECT(!s.hold && s.camera == dining_camera && s.prop.x == 18000 &&
+           s.busy && strstr(s.text, "revealing the Shield Key"));
+    EXPECT(!pe_re_save_decode(s.progress->data, &saved) && saved.camera == dining_camera &&
+           pe_re_flag(&saved.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_CLOCK_OPEN));
+    s.save_read(NULL, NULL);
+    frames(1, 0);
+    EXPECT(!strcmp(s.room, "re1:room/105") && s.prop.x == 18000);
     return 0;
 }
 
