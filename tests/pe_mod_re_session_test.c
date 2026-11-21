@@ -181,6 +181,12 @@ static int re1_shield_route(PeReSession *s, const char *store) {
           pe_re_has(&s->progress, PE_RE1_WOOD_EMBLEM));
 
     if (!re1_route_walk(s, store, to_piano, sizeof to_piano / sizeof *to_piano)) return 0;
+    PeRe1EventPlan piano_event;
+    CHECK(pe_re1_event_plan(s->logic, 6, &piano_event) && piano_event.count == 4 && piano_event.duration == 797);
+    CHECK(piano_event.cuts[0].tick == 20 && piano_event.cuts[0].camera == 6 &&
+          piano_event.cuts[1].tick == 677 && piano_event.cuts[1].camera == 1 &&
+          piano_event.cuts[2].tick == 737 && piano_event.cuts[2].camera == 7 &&
+          piano_event.cuts[3].tick == 777 && piano_event.cuts[3].camera == 1);
     CHECK(strstr(s->said, "Lock Pick"));
     CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 8850, 19300, NULL) < 0);
     pe_re_session_place(s, 8850, 19300, 0);

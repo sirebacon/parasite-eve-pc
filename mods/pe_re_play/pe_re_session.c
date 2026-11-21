@@ -352,35 +352,12 @@ uint16_t pe_re1_item_for_trigger(const PeReSession *s, const PeImpTrigger *trigg
     return use && !re1_use_done(s, use->done) ? (uint16_t)use->item : 0;
 }
 
-static uint32_t re1_event_offset(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-
 int pe_re1_piano_cuts(const PeImpRoomLogic *room, uint8_t cameras[PE_RE1_PIANO_CUTS]) {
     if (!room || room->game != PE_IMP_RE1 || room->stage != 0 || room->room != PE_RE1_PIANO_ROOM ||
         room->player != 1) return 0;
-    uint32_t size = 0;
-    const uint8_t *events = pe_imp_logic_section(room, PE_IMP_LOGIC_SCD2, NULL, &size);
-    enum { PIANO_EVENT = 6, ENTRY = 4, CUT_COMMAND_BYTES = 4 };
-    if (!events || size < (PIANO_EVENT + 2) * ENTRY) return 0;
-    const uint32_t table_bytes = re1_event_offset(events);
-    const uint32_t start = re1_event_offset(events + PIANO_EVENT * ENTRY);
-    const uint32_t end = re1_event_offset(events + (PIANO_EVENT + 1) * ENTRY);
-    if (table_bytes < (PIANO_EVENT + 2) * ENTRY || start < table_bytes || end > size || end < start ||
-        end - start != 612) return 0;
-
-    /* A room event wraps CUT_SET (09 camera) in a 07 04 record. These are the
-     * command offsets in Jill's 612-byte sequence on the tested PS1 releases.
-     * Check the layout instead of scanning opaque operands for possible opcodes. */
-    static const uint16_t offsets[PE_RE1_PIANO_CUTS] = {60, 484, 528, 546};
-    static const uint8_t cut[] = {0x07, CUT_COMMAND_BYTES, 0x09};
-    uint8_t cuts[PE_RE1_PIANO_CUTS];
-    for (unsigned i = 0; i < PE_RE1_PIANO_CUTS; i++) {
-        const uint8_t *p = events + start + offsets[i];
-        if (memcmp(p, cut, sizeof cut) || p[3] > 7) return 0;
-        cuts[i] = p[3];
-    }
-    memcpy(cameras, cuts, sizeof cuts);
+    PeRe1EventPlan plan;
+    if (!pe_re1_event_plan(room, 6, &plan) || plan.count != PE_RE1_PIANO_CUTS) return 0;
+    for (unsigned i = 0; i < plan.count; i++) cameras[i] = plan.cuts[i].camera;
     return 1;
 }
 

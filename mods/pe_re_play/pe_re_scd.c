@@ -616,6 +616,22 @@ int pe_re1_event_plan(const PeImpRoomLogic *room, unsigned event, PeRe1EventPlan
             result.duration += le16(op + 2);
             if (result.duration > 3600) return 0;
             break;
+        /* Actor, animation and flag commands used by the Piano Bar event.
+         * Their effects are handled by the current presentation adapter. */
+        case 0x04: case 0x05: case 0x84: case 0x88:
+            width = 4;
+            break;
+        case 0x80: case 0x86:
+            width = 2;
+            break;
+        case 0x83:
+            width = 8;
+            break;
+        case 0xfc:                        /* wait for a room condition, then resume */
+            width = (uint32_t)op[1] + 2;
+            if (width < 4 || width > end - at || op[width - 2] != 0xfe || op[width - 1] != 0xfd)
+                return 0;
+            break;
         case 0xff:
             if (op[1]) return 0;
             *plan = result;
@@ -623,6 +639,7 @@ int pe_re1_event_plan(const PeImpRoomLogic *room, unsigned event, PeRe1EventPlan
         default:
             return 0;
         }
+        if (width > end - at) return 0;
         at += width;
     }
     return 0;
