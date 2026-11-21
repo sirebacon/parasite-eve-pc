@@ -180,11 +180,28 @@ void pe_re_session_place(PeReSession *s, double x, double z, int facing) {
     s->x = x, s->z = z, s->facing = facing & 4095;
 }
 
+enum { CREST_PASSAGE_ROOM = 0x1A, CREST_GATE_ROOM = 0x1B, CREST_GATE_LOCK = 0x97 };
+
+static int re1_use_done(const PeReSession *s, unsigned flag) {
+    return pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, flag);
+}
+
+static unsigned re1_empty_crest_slots(const PeReSession *s) {
+    return 4u - (unsigned)(re1_use_done(s, PE_RE1_SUN_PLACED) + re1_use_done(s, PE_RE1_MOON_PLACED) +
+                           re1_use_done(s, PE_RE1_STAR_PLACED) + re1_use_done(s, PE_RE1_WIND_PLACED));
+}
+
 /* Through door `d`: locked says why; else the next room, placed as the door says. */
 static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *d, char *why, size_t n) {
     const unsigned lock_byte = d->lock_id >> 3;
     const uint8_t previous_locks = s->progress.unlocked[lock_byte];
     s->said[0] = 0;
+    /* The RE1 room script gates this exit with the crest panel, separately from key locks. */
+    if (s->logic->game == PE_IMP_RE1 && s->stage == 0 && s->room == CREST_PASSAGE_ROOM &&
+        d->room == CREST_GATE_ROOM && d->lock_id == CREST_GATE_LOCK && re1_empty_crest_slots(s)) {
+        snprintf(s->said, sizeof s->said, "The gate is locked. Fit the four crests into the panel.");
+        return PE_RE_SAID;
+    }
     /* In RE1, key type zero permits passage even when the source door carries a lock ID. */
     if ((s->logic->game != PE_IMP_RE1 || d->lock_type) &&
         pe_re_door_try(&s->progress, d, s->logic, s->items, s->said, sizeof s->said) == PE_RE_DOOR_LOCKED) return PE_RE_SAID;
@@ -262,11 +279,15 @@ static const Re1ItemUse k_re1_item_uses[] = {
      "The pedestal takes an emblem.", "The Wooden Emblem frees the Gold Emblem."},
     {PE_RE1_DINING_ROOM, 13, 9, PE_RE1_GOLD_EMBLEM, PE_RE1_CLOCK_OPEN, -1, RE_POSE_REACH,
      "An emblem fits in the recess above the fireplace.", "The clock moved, revealing the Shield Key."},
+    {CREST_PASSAGE_ROOM, 3, 7, PE_RE1_SUN_CREST, PE_RE1_SUN_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Sun Crest fits into the panel."},
+    {CREST_PASSAGE_ROOM, 4, 7, PE_RE1_MOON_CREST, PE_RE1_MOON_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Moon Crest fits into the panel."},
+    {CREST_PASSAGE_ROOM, 5, 7, PE_RE1_STAR_CREST, PE_RE1_STAR_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Star Crest fits into the panel."},
+    {CREST_PASSAGE_ROOM, 6, 7, PE_RE1_WIND_CREST, PE_RE1_WIND_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Wind Crest fits into the panel."},
 };
-
-static int re1_use_done(const PeReSession *s, unsigned flag) {
-    return pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, flag);
-}
 
 static const Re1ItemUse *re1_item_use(const PeReSession *s, const PeImpTrigger *t) {
     for (size_t i = 0; i < sizeof k_re1_item_uses / sizeof *k_re1_item_uses; i++) {
@@ -391,7 +412,15 @@ static PeReChange re1_examine(PeReSession *s, double x, double z) {
             !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)) continue;
         const Re1ItemUse *use = re1_item_use(s, &trigger);
         if (use) {
-            snprintf(s->said, sizeof s->said, "%s", re1_use_done(s, use->done) ? use->result : use->hint);
+            if (use->room == CREST_PASSAGE_ROOM) {
+                const unsigned empty = re1_empty_crest_slots(s);
+                if (empty)
+                    snprintf(s->said, sizeof s->said, "The crest panel has %u empty %s.", empty, empty == 1 ? "slot" : "slots");
+                else
+                    snprintf(s->said, sizeof s->said, "All four crests are in place. The gate is unlocked.");
+            } else {
+                snprintf(s->said, sizeof s->said, "%s", re1_use_done(s, use->done) ? use->result : use->hint);
+            }
             return PE_RE_SAID;
         }
         const int kind = pe_re1_examine_kind(&trigger);
@@ -519,7 +548,10 @@ PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
         pe_re_flag_set(&s->progress.flags, PE_RE1_FG_PREVIEW, use->done, 1);
         s->uses++;
         s->use_pose = use->pose;
-        snprintf(s->said, sizeof s->said, "%s", use->result);
+        if (use->room == CREST_PASSAGE_ROOM && !re1_empty_crest_slots(s))
+            snprintf(s->said, sizeof s->said, "%s The gate is unlocked.", use->result);
+        else
+            snprintf(s->said, sizeof s->said, "%s", use->result);
         return PE_RE_SAID;
     }
     if (!pe_re_flag(&s->progress.flags, PE_RE_FG_USE, item)) {   /* the status screen's "can't use it here" */

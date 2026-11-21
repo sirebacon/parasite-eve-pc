@@ -205,6 +205,58 @@ static int re1_shield_route(PeReSession *s, const char *store) {
     return 1;
 }
 
+static void re1_crest_route(PeReSession *s, const char *store) {
+    static const unsigned to_sun[] = {0x20e, 0x20d, 0x204, 0x205};
+    static const unsigned to_wind[] = {0x204, 0x203, 0x106, 0x105, 0x104, 0x103, 0x10d};
+    static const unsigned to_star[] = {0x103, 0x104, 0x105, 0x106, 0x107, 0x108, 0x109, 0x10a, 0x117};
+    static const unsigned to_gate[] = {0x10a, 0x11a};
+    char why[200] = "";
+    CHECK(pe_re_session_step(s, store, 4608, 24040, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_MOON_CREST));
+    if (!re1_route_walk(s, store, to_sun, sizeof to_sun / sizeof *to_sun)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 2500, 7350, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_SUN_CREST));
+    if (!re1_route_walk(s, store, to_wind, sizeof to_wind / sizeof *to_wind)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 3940, 4692, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_WIND_CREST));
+    if (!re1_route_walk(s, store, to_star, sizeof to_star / sizeof *to_star)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 1850, 4100, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_STAR_CREST));
+    if (!re1_route_walk(s, store, to_gate, sizeof to_gate / sizeof *to_gate)) { CHECK(0); return; }
+
+    CHECK(re1_route_door(s, store, 0x11b, PE_RE_SAID) && strstr(s->said, "four crests"));
+    CHECK(pe_re_session_use(s, PE_RE1_MOON_CREST) == PE_RE_SAID && pe_re_has(&s->progress, PE_RE1_MOON_CREST));
+    CHECK(pe_re_session_step(s, store, 7500, 27700, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "4 empty slots"));
+    CHECK(pe_re_session_use(s, PE_RE1_MOON_CREST) == PE_RE_SAID && s->use_pose == RE_POSE_REACH &&
+          !pe_re_has(&s->progress, PE_RE1_MOON_CREST));
+
+    uint8_t bytes[PE_RE_SAVE_SIZE];
+    PeReSaved saved;
+    PeReSession resumed;
+    pe_re_save_encode(s, 1, bytes);
+    if (pe_re_save_decode(bytes, &saved) || pe_re_session_resume(&resumed, store, &saved, why, sizeof why)) {
+        CHECK(0);
+        return;
+    }
+    CHECK(!pe_re_has(&resumed.progress, PE_RE1_MOON_CREST));
+    CHECK(pe_re_session_step(&resumed, store, 7500, 27700, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(resumed.said, "3 empty slots"));
+    CHECK(pe_re_session_use(&resumed, PE_RE1_WIND_CREST) == PE_RE_SAID &&
+          !pe_re_has(&resumed.progress, PE_RE1_WIND_CREST));
+    CHECK(pe_re_session_use(&resumed, PE_RE1_SUN_CREST) == PE_RE_SAID &&
+          !pe_re_has(&resumed.progress, PE_RE1_SUN_CREST));
+    CHECK(re1_route_door(&resumed, store, 0x11b, PE_RE_SAID));
+    CHECK(pe_re_session_step(&resumed, store, 7500, 27700, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(resumed.said, "1 empty slot"));
+    CHECK(pe_re_session_use(&resumed, PE_RE1_STAR_CREST) == PE_RE_SAID &&
+          !pe_re_has(&resumed.progress, PE_RE1_STAR_CREST) && strstr(resumed.said, "gate is unlocked"));
+    CHECK(re1_route_door(&resumed, store, 0x11b, PE_RE_ROOM) && re1_route_door(&resumed, store, 0x11a, PE_RE_ROOM) &&
+          re1_route_door(&resumed, store, 0x11b, PE_RE_ROOM));
+    pe_re_session_end(&resumed);
+    printf("RE1 Jill: all four crests, partial panel reload and courtyard gate\n");
+}
+
 /* Jill's mansion hall exercises the RE1 importer through the portable session. The same
  * background is shared with Chris, but the door and collision records are Jill's variant. */
 static void re1_mansion(const char *cue) {
@@ -334,7 +386,11 @@ static void re1_mansion(const char *cue) {
     if (!pe_re_session_start(&session, store, game, 1, why, sizeof why)) {
         const int armor_route = re1_armor_route(&session, store);
         CHECK(armor_route);
-        if (armor_route) CHECK(re1_shield_route(&session, store));
+        if (armor_route) {
+            const int shield_route = re1_shield_route(&session, store);
+            CHECK(shield_route);
+            if (shield_route) re1_crest_route(&session, store);
+        }
         pe_re_session_end(&session);
     } else CHECK(0);
 

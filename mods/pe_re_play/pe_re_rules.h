@@ -27,6 +27,10 @@
 #define PE_RE_LOCK_BOLT 254
 #define PE_RE1_INK_RIBBON 0x2F
 #define PE_RE1_CHEMICAL 0x26
+#define PE_RE1_WIND_CREST 0x29
+#define PE_RE1_MOON_CREST 0x2C
+#define PE_RE1_STAR_CREST 0x2D
+#define PE_RE1_SUN_CREST 0x2E
 #define PE_RE1_ARMOR_KEY 0x34
 #define PE_RE1_WOOD_EMBLEM 0x1F
 #define PE_RE1_GOLD_EMBLEM 0x20
@@ -43,6 +47,10 @@
 #define PE_RE1_PIANO_PLAYED 2
 #define PE_RE1_PIANO_EMBLEM_PLACED 3
 #define PE_RE1_CLOCK_OPEN 4
+#define PE_RE1_SUN_PLACED 5
+#define PE_RE1_MOON_PLACED 6
+#define PE_RE1_STAR_PLACED 7
+#define PE_RE1_WIND_PLACED 8
 #define PE_RE2_INK_RIBBON 0x1E                     /* a typewriter save takes one (SCE_AT.C Save_entrance) */
 #define PE_RE_LOCK_OTHER_SIDE 255
 
