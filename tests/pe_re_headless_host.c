@@ -24,6 +24,8 @@ static struct {
     PeMenuAction start, next_door, jump, typewriter, give_ribbon, next_use, give_use;
     ReHostPose gesture;
     unsigned gesture_frame;
+    unsigned camera_count;
+    int cameras[PE_RE1_PIANO_CUTS + 1];
     int *scenario, *stage, *room_number;
     const PeExtensionSection *progress;
     const PeRePlayApi *api;
@@ -55,6 +57,8 @@ static int show_room(const char *id, const PeImpRoomLogic *logic, int camera, in
     s.active = 1;
     s.rooms++;
     s.camera = camera;
+    if (s.hold && s.gesture == RE_POSE_PIANO && s.camera_count < sizeof s.cameras / sizeof *s.cameras)
+        s.cameras[s.camera_count++] = camera;
     s.floor = floor;
     place(use_pose ? x : 0, use_pose ? z : 0);
     face(use_pose ? facing : 0);
@@ -257,6 +261,7 @@ static int play_gesture(void) {
     *s.room_number = PE_RE1_PIANO_ROOM;
     s.jump();
     frames(1, 0);
+    const int previous_camera = s.camera;
     s.next_use();
     s.give_use();
     frames(1, RE_HOST_SQUARE);
@@ -267,8 +272,11 @@ static int play_gesture(void) {
     EXPECT(s.hold && s.gesture == RE_POSE_PIANO && s.gesture_frame == 8 && !s.busy);
     frames(60, RE_HOST_CROSS);
     EXPECT(!s.hold && s.gesture == RE_POSE_IDLE && s.busy && strstr(s.text, "hidden alcove"));
+    const int expected[] = {6, 1, 7, 1, previous_camera};
+    EXPECT(s.camera_count == sizeof expected / sizeof *expected &&
+           !memcmp(s.cameras, expected, sizeof expected));
     PeReSaved saved;
-    EXPECT(!pe_re_save_decode(s.progress->data, &saved) &&
+    EXPECT(!pe_re_save_decode(s.progress->data, &saved) && saved.camera == previous_camera &&
            pe_re_flag(&saved.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED));
     return 0;
 }

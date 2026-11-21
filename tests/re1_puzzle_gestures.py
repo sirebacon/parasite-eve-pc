@@ -46,8 +46,10 @@ def test_puzzles(game):
         game.adv(10)
         if pose == "piano":
             game.raw("capture idle-piano")
-        starts = log().count(f"puzzle gesture: {pose}")
-        ends = log().count("puzzle gesture: finished")
+        initial_log = log()
+        starts = initial_log.count(f"puzzle gesture: {pose}")
+        ends = initial_log.count("puzzle gesture: finished")
+        camera_prefix = "pe_re_play: puzzle camera: "
         game.press(SQUARE, 40)
         for _ in range(slot):
             game.press(RIGHT, 10)
@@ -56,7 +58,11 @@ def test_puzzles(game):
         check(log().count(f"puzzle gesture: {pose}") == starts + 1, f"{item}: gesture did not start")
         check(log().count("puzzle gesture: finished") == ends, f"{item}: gesture ended before capture")
         if pose == "piano":
-            # The testing shortcuts can place Aya outside the view at the emblem spots.
+            for _ in range(6):
+                if camera_prefix + "6" in log()[len(initial_log):]:
+                    break
+                game.adv(4)
+            check(camera_prefix + "6" in log()[len(initial_log):], "Piano event's first camera did not load")
             game.raw("capture gesture-piano")
             idle = game.work / "idle-piano.ppm"
             gesture = game.work / "gesture-piano.ppm"
@@ -66,6 +72,10 @@ def test_puzzles(game):
             if log().count("puzzle gesture: finished") > ends:
                 break
         check(log().count("puzzle gesture: finished") == ends + 1, f"{item}: gesture did not finish")
+        if pose == "piano":
+            shots = [line.removeprefix(camera_prefix) for line in log()[len(initial_log):].splitlines()
+                     if line.startswith(camera_prefix)]
+            check(shots == ["6", "1", "7", "1"], f"Piano event camera sequence: {shots}")
         actual = state()
         check(item not in actual["Pocket"], actual)
         game.adv(20)

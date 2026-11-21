@@ -123,6 +123,9 @@ int pe_re_session_defeated(PeReSession *s, uint8_t killed_flag);
 PeReChange pe_re_session_use(PeReSession *s, uint16_t item);
 /* The item this imported RE1 trigger can take, or zero. Used by the testing menu. */
 uint16_t pe_re1_item_for_trigger(const PeReSession *s, const PeImpTrigger *trigger);
+#define PE_RE1_PIANO_CUTS 4
+/* Room10F Jill event 6: the CUT_SET cameras in source order. 0 if the event layout is unknown. */
+int pe_re1_piano_cuts(const PeImpRoomLogic *room, uint8_t cameras[PE_RE1_PIANO_CUTS]);
 /* A frame of the room's scripts. PE_RE_SAID when one put up a message (`said`), PE_RE_ZONE when one
  * set off a zone the mod handles (aot_on), PE_RE_CAMERA when one cut to another camera (camera
  * zones stay out until it lets go); else PE_RE_STAY. */

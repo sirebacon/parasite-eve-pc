@@ -49,6 +49,12 @@ static int s_playing, s_cross_held, s_square_held, s_reshown;
 static char s_status[200] = "Not playing.";
 static unsigned s_gesture_frame, s_gesture_frames;
 static ReHostPose s_gesture_pose;
+static uint8_t s_gesture_cameras[PE_RE1_PIANO_CUTS];
+static int s_gesture_cuts;
+
+/* The event's camera order comes from the disc. The preview compresses the
+ * performance into a short interaction while its other commands are unmapped. */
+static const unsigned k_piano_cut_frames[PE_RE1_PIANO_CUTS] = {6, 24, 35, 44};
 
 static void list_games(void) {
     if (s_listed) return;
@@ -70,9 +76,21 @@ static void say(const char *text) {
     if (!re_host()->say(text)) pe_toast(text);
 }
 
+static int show_gesture_camera(int camera) {
+    char room[PE_IMP_ID_MAX], why[200] = "";
+    pe_re_room_id(s_session.game->game, s_session.stage, s_session.room, room, sizeof room);
+    if (re_host()->show_room(room, s_session.logic, camera, s_session.floor, 1,
+                             s_session.x, s_session.z, s_session.facing, why, sizeof why)) {
+        pe_mod_log(MOD_ID, "puzzle camera %d unavailable: %s", camera, why);
+        return 0;
+    }
+    return 1;
+}
+
 static void cancel_gesture(void) {
     if (!s_gesture_frames) return;
     s_gesture_frames = 0;
+    s_gesture_cuts = 0;
     re_host()->player_gesture(RE_POSE_IDLE, 0, 0);
     re_host()->room_fade(128, 0, 0);
 }
@@ -86,6 +104,7 @@ static void present_item_use(void) {
     s_gesture_pose = s_session.use_pose;
     s_gesture_frame = 0;
     s_gesture_frames = s_gesture_pose == RE_POSE_PIANO ? 52 : 22;
+    s_gesture_cuts = s_gesture_pose == RE_POSE_PIANO && pe_re1_piano_cuts(s_session.logic, s_gesture_cameras);
     host->room_fade(128, 0, 1);
     host->player_gesture(s_gesture_pose, 0, s_gesture_frames);
     pe_mod_log(MOD_ID, "puzzle gesture: %s", s_gesture_pose == RE_POSE_PIANO ? "piano" : "reach");
@@ -162,10 +181,9 @@ static int s_pick, s_pick_at;
 static int pause_for_battle(void) {
     if (!s_playing) return 0;
     if (s_battle_paused || !re_host()->room_active() || !re_host()->field_free() ||
-        pe_re_door_busy() || re_host()->dialogue_busy() || s_typing != TYPE_NONE) return -1;
+        pe_re_door_busy() || s_gesture_frames || re_host()->dialogue_busy() || s_typing != TYPE_NONE) return -1;
     re_host()->player_pose(&s_session.x, &s_session.z, &s_session.facing);
     s_session.floor = re_host()->player_floor();
-    cancel_gesture();
     s_battle_paused = 1;
     re_host()->arm_backdrop();                  /* the battle plays in front of this room */
     re_host()->hide_room();
@@ -463,10 +481,17 @@ static int on_frame(void *ctx, void *user) {
         s_cross_held = (buttons & RE_HOST_CROSS) != 0;
         s_square_held = (buttons & RE_HOST_SQUARE) != 0;
         if (++s_gesture_frame >= s_gesture_frames) {
+            if (s_gesture_cuts) show_gesture_camera(s_session.camera);
             cancel_gesture();
             say(s_session.said);
             pe_mod_log(MOD_ID, "puzzle gesture: finished");
-        } else re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
+        } else {
+            if (s_gesture_cuts)
+                for (unsigned i = 0; i < PE_RE1_PIANO_CUTS; i++)
+                    if (s_gesture_frame == k_piano_cut_frames[i] && show_gesture_camera(s_gesture_cameras[i]))
+                        pe_mod_log(MOD_ID, "puzzle camera: %u", (unsigned)s_gesture_cameras[i]);
+            re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
+        }
         if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);
         return 0;
     }
