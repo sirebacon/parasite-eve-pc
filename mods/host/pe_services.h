@@ -20,6 +20,8 @@ typedef struct PeBattleActionPolicyApi { int (*partial_actions)(void); } PeBattl
  *   "rebuild"   v1  pe_catalog  dismantled gear to buy back (Wayne's Workshop)
  *   "phonecalls" v1 pe_phone    calls Aya can make after saving at a phone (call packs)
  *   "bp"        v1  pe_bp       BP upgrades: ranks, quotes, checked purchases, pauses (preview)
+ *   "re_play"   v1  pe_re_play  an imported game being played: its room, enemy placements, defeats
+ *                               (game-neutral: its types and events are in re_play_api.h)
  *
  * Providers (an import pack, a randomizer) register at their init, so they list "pe_collection"
  * in their PeMod requires. Keys are stable names saved in the player's profile ("pe1/rat",
@@ -29,6 +31,9 @@ typedef struct PeBattleActionPolicyApi { int (*partial_actions)(void); } PeBattl
 
 #include <stddef.h>
 #include <stdint.h>
+
+/* No payload. The importer has finished publishing its catalog changes on the main thread. */
+#define PE_EVENT_IMPORT_PUBLISHED "import.published"
 
 /* assets v1 and audio v1. Preview handles address imported catalog data by stable
  * source ID. Call on the main thread and release each acquired reference once.
