@@ -143,7 +143,12 @@ static struct {
     int active;
     int ghost;              /* landed where the collision has no free floor: walk freely until clear */
     int floor;              /* the floor whose walls she meets; ramps change it */
+    int pool;
 } s_walk;
+
+static double room_floor_height(int floor) {
+    return s_walk.pool && floor == PE_RE1_POOL_FLOOR ? PE_RE1_POOL_DEPTH : -(double)floor * PE_RE2_FLOOR_HEIGHT;
+}
 
 static void free_masks(void) {
     free(s_masks);
@@ -191,7 +196,7 @@ static int spawn_on_floor(int floor, int require_clear) {
         double sy = (double)offsets_y[i] / s_camera.distance;
         double ray_y = (m->m[2][1] + sy * m->m[1][1]) / 4096.0;
         if (fabs(ray_y) < 0.0001) continue;
-        double depth = (-(double)floor * PE_RE2_FLOOR_HEIGHT - s_camera.eye[1]) / ray_y;      /* where the ray meets this floor */
+        double depth = (room_floor_height(floor) - s_camera.eye[1]) / ray_y;      /* where the ray meets this floor */
         if (depth < 2200 || depth > 12000 * RE_UNITS_PER_PE_UNIT) continue;
         for (unsigned j = 0; j < sizeof offsets_x / sizeof *offsets_x; j++) {
             double sx = (double)offsets_x[j] / s_camera.distance;
@@ -218,9 +223,22 @@ static RenderRotationOverride s_gesture[2];
 
 void pe_re_stage_gesture(ReHostPose pose, unsigned frame, unsigned frames) {
     memset(s_gesture, 0, sizeof s_gesture);
+    if (pose == RE_POSE_IDLE && s_walk.pool) s_walk.y = room_floor_height(s_walk.floor);
     if (pose == RE_POSE_IDLE || !frames || frame >= frames) return;
     const double pi = acos(-1.0);
     const double t = (double)frame / frames;
+    if (pose == RE_POSE_CLIMB) {
+        const double start = s_walk.floor == PE_RE1_POOL_FLOOR ? 0 : PE_RE1_POOL_DEPTH;
+        s_walk.y = start + (room_floor_height(s_walk.floor) - start) * t;
+        const double stroke = 200 * sin(6 * pi * t);
+        s_gesture[0] = (RenderRotationOverride){
+            .x = (uint16_t)(int)lround(-580 + stroke), .z = 280, .matrix_index = 4, .flags = 5
+        };
+        s_gesture[1] = (RenderRotationOverride){
+            .x = (uint16_t)(int)lround(-580 - stroke), .z = 280, .matrix_index = 14, .flags = 5
+        };
+        return;
+    }
     const double lift = sin(pi * t);
     const double tap = pose == RE_POSE_PIANO ? 60 * sin(10 * pi * t) : 0;
     /* Aya's upper-arm slots correspond to bones 4 and 14 in the skin builder. */
@@ -272,7 +290,7 @@ static int on_move(void *ctx, void *user) {
                 s_walk.y = ground;
                 s_walk.floor = pe_re_floor_of((int)lround(ground));
             } else {
-                s_walk.y = -(double)s_walk.floor * PE_RE2_FLOOR_HEIGHT;
+                s_walk.y = room_floor_height(s_walk.floor);
             }
         }
     }
@@ -532,15 +550,18 @@ int pe_re_stage_show(const char *room_id, const PeImpRoomLogic *logic, int camer
         prepare_camera(&view);
         uint32_t coll = 0;
         const uint8_t *data = logic ? pe_imp_logic_section(logic, PE_IMP_LOGIC_COLL, NULL, &coll) : NULL;
+        s_walk.pool = pe_re1_is_pool(logic);
+        const int no_collision = re1 ? pe_imp_re1_collision(data, coll, &s_walk.collision)
+                                    : ((!data || pe_imp_re2_collision_all(data, coll, &s_walk.collision)) &&
+                                       pe_imp_re2_image_collision(set, &s_walk.collision));
+        if (!no_collision && s_walk.pool) pe_re1_pool_collision(&s_walk.collision);
         if (!s_camera.distance) snprintf(why, n, "camera %d has no projection", camera);
-        else if (re1 ? pe_imp_re1_collision(data, coll, &s_walk.collision)
-                     : ((!data || pe_imp_re2_collision_all(data, coll, &s_walk.collision)) &&
-                        pe_imp_re2_image_collision(set, &s_walk.collision)))
+        else if (no_collision)
             snprintf(why, n, "%s has no supported collision", room_id);
         else if (!place && !spawn_on_floor(floor, re1)) snprintf(why, n, "no free floor in camera %d", camera);
         else {
             s_walk.floor = floor;
-            s_walk.y = -(double)floor * PE_RE2_FLOOR_HEIGHT;
+            s_walk.y = room_floor_height(floor);
             if (place) {                                     /* a door's landing point: clear of walls */
                 s_walk.x = x, s_walk.z = z, s_walk.yaw = facing;
                 /* The collision knows the ground floor only: upstairs a landing can be all "wall". */
@@ -1095,7 +1116,7 @@ int pe_re_stage_to_ramp(void) {
         if (c->shape == 12) for (; f && !(f & 1) && low < 31; low++, f >>= 1) {}
         else low = ((c->type >> 6) & 0x1F) - 1;
         s_walk.floor = low < 0 ? 0 : low;
-        s_walk.y = -(double)s_walk.floor * PE_RE2_FLOOR_HEIGHT;
+        s_walk.y = room_floor_height(s_walk.floor);
         pe_re_stage_place(x, z);
         s_next = i + 1;
         return 1;

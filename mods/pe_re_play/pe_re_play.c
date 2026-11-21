@@ -147,6 +147,17 @@ static void cancel_gesture(void) {
     re_host()->room_fade(128, 0, 0);
 }
 
+static void present_pool_climb(void) {
+    const ReHost *host = re_host();
+    if (host->struct_size < sizeof *host || !host->player_gesture) return;
+    s_gesture_pose = RE_POSE_CLIMB;
+    s_gesture_frame = 0;
+    s_gesture_frames = 34;
+    host->room_fade(128, 0, 1);
+    host->player_gesture(s_gesture_pose, 0, s_gesture_frames);
+    pe_mod_log(MOD_ID, "pool ladder: %s", s_session.floor == PE_RE1_POOL_FLOOR ? "descending" : "ascending");
+}
+
 static void present_item_use(uint16_t item) {
     const ReHost *host = re_host();
     if (s_session.use_pose == RE_POSE_IDLE) {
@@ -549,8 +560,12 @@ static int on_frame(void *ctx, void *user) {
         if (++s_gesture_frame >= s_gesture_frames) {
             if (s_gesture_cuts || s_prop_cut) show_gesture_camera(s_session.camera);
             cancel_gesture();
-            say(s_session.said);
-            pe_mod_log(MOD_ID, "puzzle gesture: finished");
+            if (s_gesture_pose == RE_POSE_CLIMB)
+                pe_mod_log(MOD_ID, "pool ladder: finished");
+            else {
+                say(s_session.said);
+                pe_mod_log(MOD_ID, "puzzle gesture: finished");
+            }
         } else {
             if (s_gesture_cuts)
                 for (unsigned i = 0; i < PE_RE1_PIANO_CUTS; i++)
@@ -599,6 +614,10 @@ static int on_frame(void *ctx, void *user) {
     s_session.facing = facing, s_session.floor = re_host()->player_floor();
     switch (pe_re_session_step(&s_session, s_store, x, z, pressed, why, sizeof why)) {
     case PE_RE_CAMERA: show_room(1); break;
+    case PE_RE_CLIMB:
+        show_room(1);
+        if (s_playing) present_pool_climb();
+        break;
     case PE_RE_ROOM:                             /* the door's transition puts the next room up at black */
         s_room_reported = 0;
         re_host()->set_placements(NULL, 0);
@@ -673,7 +692,9 @@ static void to_zone(uint32_t tag, int kind, const char *what) {
             zone = &pk.zone;
         } else if (tag == PE_IMP_LOGIC_TRIG) {
             if (pe_imp_logic_trigger(s_session.logic, i, &t) || !pe_re_scd_live(&s_session.run, t.at)) continue;
-            if (s_session.logic->game == PE_IMP_RE1 && kind == PE_RE_ZONE_FLAG) {
+            if (kind == PE_RE_ZONE_MOVE) {
+                if (!pe_re1_is_pool_ladder(s_session.logic, &t)) continue;
+            } else if (s_session.logic->game == PE_IMP_RE1 && kind == PE_RE_ZONE_FLAG) {
                 const uint16_t item = pe_re1_item_for_trigger(&s_session, &t);
                 if (!item) continue;
                 s_use_here = item;
@@ -737,7 +758,8 @@ static void give_use_here(void) {           /* the item the last place to use on
 static void to_ramp(void) {
     if (!s_playing || s_battle_paused) return;
     if (s_session.logic->game == PE_IMP_RE1) {
-        to_zone(PE_IMP_LOGIC_DOOR, 1, "stairway");
+        if (pe_re1_is_pool(s_session.logic)) to_zone(PE_IMP_LOGIC_TRIG, PE_RE_ZONE_MOVE, "pool ladder");
+        else to_zone(PE_IMP_LOGIC_DOOR, 1, "stairway");
         return;
     }
     if (!re_host()->place_at_ramp()) { snprintf(s_status, sizeof s_status, "This room has no slopes or stairs."); return; }
@@ -813,7 +835,7 @@ static int init(void) {
     pe_menu_register_toggle("Testing", "Placement idle animation", "Animate supported placement meshes in place.", &s_placement_idle, NULL);
     pe_menu_register_action("Testing", "Go to the next door", "Puts Aya in the room's doorways, one after another.", to_door);
     pe_menu_register_action("Testing", "Go to the next pickup", "Puts Aya on the room's items, one after another.", to_pickup);
-    pe_menu_register_action("Testing", "Go to the next ramp", "Find a stairway in RE1 or the foot of the next ramp in RE2.", to_ramp);
+    pe_menu_register_action("Testing", "Go to the next ramp", "Find an RE1 stairway or pool ladder, or an RE2 ramp.", to_ramp);
     pe_menu_register_action("Testing", "Go to the next message", "Puts Aya where the room's messages are read, one after another.", to_message);
     pe_menu_register_action("Testing", "Go to the next place to use an item", "Puts Aya facing where the room takes an item (a jewel in a statue), one after another.", to_item_spot);
     pe_menu_register_action("Testing", "Give the item used there", "Puts the item that place takes in the pocket.", give_use_here);

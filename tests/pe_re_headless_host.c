@@ -357,6 +357,21 @@ static int play_gesture(void) {
     s.save_read(NULL, NULL);
     frames(1, 0);
     EXPECT(!strcmp(s.room, "re1:room/301") && !s.prop.asset_id[0]);
+
+    place(22250, 11223);
+    frames(10, RE_HOST_CROSS);
+    EXPECT(s.hold && s.gesture == RE_POSE_CLIMB && s.floor == PE_RE1_POOL_FLOOR && s.camera == 1);
+    frames(35, 0);
+    EXPECT(!s.hold && !s.busy && s.gesture == RE_POSE_IDLE);
+    EXPECT(!pe_re_save_decode(s.progress->data, &saved) && saved.floor == PE_RE1_POOL_FLOOR);
+    s.save_read(NULL, NULL);
+    frames(1, 0);
+    EXPECT(s.floor == PE_RE1_POOL_FLOOR && !s.prop.asset_id[0]);
+    place(22250, 25146);
+    frames(10, RE_HOST_CROSS);
+    EXPECT(s.hold && s.gesture == RE_POSE_CLIMB && s.floor == 0 && s.camera == 5);
+    frames(35, 0);
+    EXPECT(!s.hold && !s.busy && s.floor == 0 && s.gesture == RE_POSE_IDLE);
     return 0;
 }
 

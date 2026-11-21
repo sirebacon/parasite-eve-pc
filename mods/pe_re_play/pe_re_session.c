@@ -183,6 +183,32 @@ void pe_re_session_place(PeReSession *s, double x, double z, int facing) {
 enum { CREST_PASSAGE_ROOM = 0x1A, CREST_GATE_ROOM = 0x1B, CREST_GATE_LOCK = 0x97 };
 enum { COURTYARD_STAGE = 2, POOL_ROOM = 1, WATERFALL_ROOM = 2 };
 
+int pe_re1_is_pool(const PeImpRoomLogic *room) {
+    return room && room->game == PE_IMP_RE1 && room->stage == COURTYARD_STAGE && room->room == POOL_ROOM;
+}
+
+int pe_re1_is_pool_ladder(const PeImpRoomLogic *room, const PeImpTrigger *trigger) {
+    return pe_re1_is_pool(room) && trigger->zone.sce == 0x0c && trigger->data[0] == 0x81 &&
+           (trigger->zone.id == 2 || trigger->zone.id == 3);
+}
+
+void pe_re1_pool_collision(PeRe2RoomCollision *collision) {
+    static const PeRe2Collider bounds[] = {
+        /* The static walls leave a gap at either ladder. Close the gap on the bank. */
+        {13176, 11736, 31014, 24624, 0, 0, 1},
+        /* Below the bank, wall off the narrow passage between the two ladders. */
+        {-32768, -32768, 21150, 32767, 0, 0, 1u << PE_RE1_POOL_FLOOR},
+        {23616, -32768, 32767, 32767, 0, 0, 1u << PE_RE1_POOL_FLOOR},
+        {21150, -32768, 23616, 10710, 0, 0, 1u << PE_RE1_POOL_FLOOR},
+        {21150, 25668, 23616, 32767, 0, 0, 1u << PE_RE1_POOL_FLOOR},
+    };
+    const unsigned count = sizeof bounds / sizeof *bounds;
+    if (collision->count <= PE_RE2_COLLIDER_MAX - count) {
+        memcpy(collision->entries + collision->count, bounds, sizeof bounds);
+        collision->count += count;
+    }
+}
+
 static int re1_use_done(const PeReSession *s, unsigned flag) {
     return pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, flag);
 }
@@ -203,7 +229,7 @@ static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *
         snprintf(s->said, sizeof s->said, "The gate is locked. Fit the four crests into the panel.");
         return PE_RE_SAID;
     }
-    if (s->logic->game == PE_IMP_RE1 && s->stage == COURTYARD_STAGE && s->room == POOL_ROOM &&
+    if (pe_re1_is_pool(s->logic) &&
         d->stage == PE_RE_STAGE_HERE && d->room == WATERFALL_ROOM && !re1_use_done(s, PE_RE1_POOL_DRAINED)) {
         snprintf(s->said, sizeof s->said, "The pool is full. The crank mechanism might lower the water.");
         return PE_RE_SAID;
@@ -419,13 +445,45 @@ static void read_pool_water(void *ctx, uint32_t proc, uint32_t at, const uint8_t
 }
 
 int pe_re1_pool_water(const PeImpRoomLogic *room, ReHostRoomProp *surface) {
-    if (!room || room->game != PE_IMP_RE1 || room->stage != COURTYARD_STAGE || room->room != POOL_ROOM) return 0;
+    if (!pe_re1_is_pool(room)) return 0;
     uint32_t bytes = 0;
     const uint8_t *rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &bytes);
     if (!rdt) return 0;
     memset(surface, 0, sizeof *surface);
     pe_imp_scd_walk(PE_IMP_RE1, rdt, bytes, read_pool_water, surface, NULL);
     return surface->asset_id[0] != 0;
+}
+
+static PeReChange re1_pool_climb(PeReSession *s, double x, double z) {
+    uint32_t count = 0;
+    pe_imp_logic_section(s->logic, PE_IMP_LOGIC_TRIG, &count, NULL);
+    double front_x, front_z;
+    pe_re_front(x, z, s->facing, &front_x, &front_z);
+    for (uint32_t i = 0; i < count; i++) {
+        PeImpTrigger t;
+        if (pe_imp_logic_trigger(s->logic, i, &t) || !pe_re1_is_pool_ladder(s->logic, &t) ||
+            !pe_re_scd_live(&s->run, t.at)) continue;
+        if (!pe_re_in_quad(t.zone.x, t.zone.z, x, z) && !pe_re_in_quad(t.zone.x, t.zone.z, front_x, front_z))
+            continue;
+        if (!re1_use_done(s, PE_RE1_POOL_DRAINED)) {
+            snprintf(s->said, sizeof s->said, "The ladder leads down into the water. Drain the pool first.");
+            return PE_RE_SAID;
+        }
+        double ladder_x = 0, ladder_z = 0;
+        for (int corner = 0; corner < 4; corner++) {
+            ladder_x += t.zone.x[corner] / 4.0;
+            ladder_z += t.zone.z[corner] / 4.0;
+        }
+        const int far = t.zone.id == 3;
+        const int descending = s->floor == 0;
+        const int bank = far ? 1 : -1;
+        s->floor = descending ? PE_RE1_POOL_FLOOR : 0;
+        s->camera = far ? 5 : 1;
+        pe_re_session_place(s, ladder_x, ladder_z + bank * (descending ? -780 : 850),
+                            descending == far ? 0 : 2048);
+        return PE_RE_CLIMB;
+    }
+    return PE_RE_STAY;
 }
 
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */
@@ -472,6 +530,12 @@ PeReChange pe_re_session_step(PeReSession *s, const char *store, double x, doubl
     PeReZoneHit hits[16];
     if (!s->game || !s->logic) return PE_RE_STAY;
     s->x = x, s->z = z;
+    if (action && pe_re1_is_pool(s->logic)) {
+        s->said[0] = 0;
+        const PeReChange climb = re1_pool_climb(s, x, z);
+        if (climb != PE_RE_STAY) return climb;
+        if (s->floor == PE_RE1_POOL_FLOOR) action = 0;   /* Only ladders are reachable down here. */
+    }
     if (action) {
         s->said[0] = 0;
         /* an examine: the game's own check (the point in front, or underfoot, by the zone's bits) */

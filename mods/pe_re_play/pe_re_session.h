@@ -47,6 +47,11 @@ int pe_re_door_at(const PeImpRoomLogic *l, const PeReScdRun *run, double x, doub
 int pe_re_door_is_stairway(const PeImpRoomLogic *room, const PeImpDoor *door);
 /* Translate RE1 examine triggers into the runtime action kinds. */
 int pe_re1_examine_kind(const PeImpTrigger *trigger);
+int pe_re1_is_pool(const PeImpRoomLogic *room);
+int pe_re1_is_pool_ladder(const PeImpRoomLogic *room, const PeImpTrigger *trigger);
+enum { PE_RE1_POOL_FLOOR = 1, PE_RE1_POOL_DEPTH = 2300 };
+/* Add the pool rim and the lower walking corridor to the courtyard's static walls. */
+void pe_re1_pool_collision(PeRe2RoomCollision *collision);
 
 /* The nearest point to (x, z) where a body of `radius` stands clear of `floor`'s walls (a door's
  * landing point can sit on a wall's edge): rings out to `reach`. 1 and the point, or 0. */
@@ -59,7 +64,7 @@ typedef struct {
     int camera;
     double x, z;
     int facing;
-    int floor;                        /* 0 ground; floor n stands at y = -1800 * n */
+    int floor;                        /* 0 ground; room geometry supplies other floor heights */
     PeImpRoomLogic *logic;            /* the room's record (owned) */
     PeImpRoomLogic *items;            /* the game's ItemTable, for names (owned; may be NULL) */
     PeReProgress progress;            /* locks opened, pickups taken, the pocket, the game's flags */
@@ -79,8 +84,9 @@ typedef struct {
 
 /* PE_RE_SAID: nothing moved, but `said` has something to show (a locked door, a pickup, a message).
  * PE_RE_ROOM can come with `said` too (the key that opened the door).
- * PE_RE_ZONE: a zone the mod handles (`zone`: a typewriter, an item box). */
-typedef enum { PE_RE_STAY, PE_RE_CAMERA, PE_RE_ROOM, PE_RE_SAID, PE_RE_ZONE } PeReChange;
+ * PE_RE_ZONE: a zone the mod handles (`zone`: a typewriter, an item box).
+ * PE_RE_CLIMB: an in-room ladder changed the player's floor, pose and camera. */
+typedef enum { PE_RE_STAY, PE_RE_CAMERA, PE_RE_ROOM, PE_RE_SAID, PE_RE_ZONE, PE_RE_CLIMB } PeReChange;
 
 /* Start at the game's first room, camera 0, standing at (x, z) chosen by the caller later
  * (pe_re_session_place). 0, or -1 with the reason. */

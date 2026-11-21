@@ -150,6 +150,25 @@ def test_puzzles(game):
     check("room prop: loaded re1:object/301-1" in log(), "Imported pool water did not load")
     use("Square Crank", state()["Pocket"].split(", ").index("Square Crank"), "reach", retained=True)
 
+    for label, floor in (("descending", 1), ("ascending", 0)):
+        action("Go to the next ramp")
+        start = len(log())
+        game.adv(10, CROSS)
+        check(f"pool ladder: {label}" in log()[start:], state())
+        game.raw(f"capture ladder-{label}-start")
+        game.adv(17)
+        game.raw(f"capture ladder-{label}-moving")
+        still = (game.work / f"ladder-{label}-start.ppm").read_bytes()
+        moving = (game.work / f"ladder-{label}-moving.ppm").read_bytes()
+        changed = sum(a != b for a, b in zip(still, moving))
+        check(400 < changed < len(still) // 6, f"The ladder view changed {changed} color bytes")
+        for _ in range(8):
+            if "pool ladder: finished" in log()[start:]:
+                break
+            game.adv(8)
+        actual = state()
+        check("pool ladder: finished" in log()[start:] and f"floor {floor}" in actual["Status"], actual)
+
 
 def main():
     disc = os.getenv("PE_TEST_DISC")

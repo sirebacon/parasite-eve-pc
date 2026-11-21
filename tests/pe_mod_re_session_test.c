@@ -211,6 +211,8 @@ static void re1_guardhouse_route(PeReSession *s, const char *store) {
           pe_re_has(&s->progress, PE_RE1_SQUARE_CRANK));
     static const unsigned to_pool[] = {0x300, 0x301};
     if (!re1_route_walk(s, store, to_pool, sizeof to_pool / sizeof *to_pool)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 22250, 11223, 1, why, sizeof why) == PE_RE_SAID &&
+          s->floor == 0 && strstr(s->said, "Drain the pool"));
     CHECK(re1_route_door(s, store, 0x302, PE_RE_SAID) && strstr(s->said, "pool is full"));
     const int uses = s->uses;
     CHECK(pe_re_session_use(s, PE_RE1_SQUARE_CRANK) == PE_RE_SAID &&
@@ -222,6 +224,8 @@ static void re1_guardhouse_route(PeReSession *s, const char *store) {
     CHECK(pe_re_session_use(s, PE_RE1_SQUARE_CRANK) == PE_RE_SAID &&
           s->uses == uses + 1 && pe_re_has(&s->progress, PE_RE1_SQUARE_CRANK));
 
+    CHECK(pe_re_session_step(s, store, 22250, 11223, 1, why, sizeof why) == PE_RE_CLIMB &&
+          s->floor == PE_RE1_POOL_FLOOR && s->camera == 1);
     uint8_t bytes[PE_RE_SAVE_SIZE];
     PeReSaved saved;
     PeReSession resumed;
@@ -230,13 +234,26 @@ static void re1_guardhouse_route(PeReSession *s, const char *store) {
         CHECK(0);
         return;
     }
-    CHECK(pe_re_has(&resumed.progress, PE_RE1_SQUARE_CRANK));
-    CHECK(pe_re_session_step(&resumed, store, 12100, 17950, 1, why, sizeof why) == PE_RE_SAID &&
-          strstr(resumed.said, "pool drained"));
+    CHECK(pe_re_has(&resumed.progress, PE_RE1_SQUARE_CRANK) && resumed.floor == PE_RE1_POOL_FLOOR &&
+          pe_re_flag(&resumed.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_POOL_DRAINED));
+    CHECK(pe_re_session_step(&resumed, store, 3150, 11100, 1, why, sizeof why) != PE_RE_ROOM);
+    PeRe2RoomCollision collision;
+    uint32_t size = 0;
+    const uint8_t *raw = pe_imp_logic_section(resumed.logic, PE_IMP_LOGIC_COLL, NULL, &size);
+    CHECK(!pe_imp_re1_collision(raw, size, &collision));
+    pe_re1_pool_collision(&collision);
+    CHECK(!pe_imp_re2_blocked_on(&collision, 0, 22250, 10373, 280));
+    CHECK(pe_imp_re2_blocked_on(&collision, 0, 22250, 15000, 280));
+    CHECK(!pe_imp_re2_blocked_on(&collision, 0, 22250, 25996, 280));
+    double x = saved.x, z = saved.z;
+    pe_imp_re2_slide_on(&collision, PE_RE1_POOL_FLOOR, &x, &z, 0, 12500, 280);
+    CHECK(z > 24246 && z < 25668);
+    CHECK(pe_re_session_step(&resumed, store, x, z, 1, why, sizeof why) == PE_RE_CLIMB &&
+          resumed.floor == 0 && resumed.camera == 5);
     static const unsigned to_guardhouse[] = {0x302, 0x304, 0x400};
     CHECK(re1_route_walk(&resumed, store, to_guardhouse, sizeof to_guardhouse / sizeof *to_guardhouse));
     pe_re_session_end(&resumed);
-    printf("RE1 Jill: Square Crank, pool drainage reload and Guardhouse entry\n");
+    printf("RE1 Jill: Square Crank, ladder crossing, pool-floor reload and Guardhouse entry\n");
 }
 
 static void re1_crest_route(PeReSession *s, const char *store) {

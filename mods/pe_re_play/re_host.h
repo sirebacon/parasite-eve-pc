@@ -13,7 +13,7 @@ typedef int (*ReHostCallback)(void *event, void *user);
 enum { RE_HOST_CROSS = 0x0040, RE_HOST_SQUARE = 0x0080 };
 #define RE_HOST_DIALOGUE_CHOICES 80
 
-typedef enum { RE_POSE_IDLE, RE_POSE_REACH, RE_POSE_PIANO } ReHostPose;
+typedef enum { RE_POSE_IDLE, RE_POSE_REACH, RE_POSE_PIANO, RE_POSE_CLIMB } ReHostPose;
 
 typedef struct {
     char asset_id[PE_IMP_ID_MAX];
