@@ -408,6 +408,26 @@ int pe_re1_dining_clock(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHo
     return 1;
 }
 
+static void read_pool_water(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
+    (void)proc;
+    (void)at;
+    /* OM_SET object 1, type 0x0F. The main water mesh uses translucent textured faces. */
+    if (size != 28 || ins[0] != 0x1f || ins[1] != 1 || ins[2] != 0x0f) return;
+    ReHostRoomProp *surface = ctx;
+    read_room_prop(surface, ins, "re1:object/301-1");
+    surface->translucent = 1;
+}
+
+int pe_re1_pool_water(const PeImpRoomLogic *room, ReHostRoomProp *surface) {
+    if (!room || room->game != PE_IMP_RE1 || room->stage != COURTYARD_STAGE || room->room != POOL_ROOM) return 0;
+    uint32_t bytes = 0;
+    const uint8_t *rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &bytes);
+    if (!rdt) return 0;
+    memset(surface, 0, sizeof *surface);
+    pe_imp_scd_walk(PE_IMP_RE1, rdt, bytes, read_pool_water, surface, NULL);
+    return surface->asset_id[0] != 0;
+}
+
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */
 static PeReChange re1_examine(PeReSession *s, double x, double z) {
     uint32_t count = 0;

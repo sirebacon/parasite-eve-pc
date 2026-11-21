@@ -845,6 +845,7 @@ static void draw_placement_meshes(RenderNativeTag *ordering, int slot, unsigned 
         const int i = next < enemies ? next : FIELD_PROP_PACKET;
         const PeReEnemyPlacement *p = next < enemies ? &s_placements[i] : &prop;
         if (next < enemies && p->kind >= FIELD_PROP_KIND) continue;
+        const int translucent = i == FIELD_PROP_PACKET && s_room_prop.translucent;
         const PeImpModel *model = &s_field_mesh[p->kind].model;
         const double foot = (double)s_field_mesh[p->kind].foot_y;
         const double angle = pe_re_facing_of(p->dir) * FIELD_TURN_RADIANS;
@@ -894,7 +895,7 @@ static void draw_placement_meshes(RenderNativeTag *ordering, int slot, unsigned 
                             field_face_texture(model, f, v, first_page, first_palette, &page, &clut)) {
                             FieldTexturedTriangle *packet = &s_tex_packets[slot][i][emitted++];
                             *packet = (FieldTexturedTriangle){
-                                .color.bytes = {shade, shade, shade, 0x24},
+                                .color.bytes = {shade, shade, shade, translucent ? 0x26 : 0x24},
                                 .x0 = (uint16_t)(int)lround(a[0]), .y0 = (uint16_t)(int)lround(a[1]),
                                 .x1 = (uint16_t)(int)lround(d[0]), .y1 = (uint16_t)(int)lround(d[1]),
                                 .x2 = (uint16_t)(int)lround(c[0]), .y2 = (uint16_t)(int)lround(c[1]),
@@ -907,6 +908,7 @@ static void draw_placement_meshes(RenderNativeTag *ordering, int slot, unsigned 
                             ordering[bucket].address = (uintptr_t)packet;
                             continue;
                         }
+                        if (translucent) continue; /* Without the texture, skip the translucent surface. */
                         const unsigned rgb = face_colour(model, f, v, first_page, first_palette);
                         if (!rgb) continue;
                         RenderColorTrianglePacket *packet = &s_mesh_packets[slot][i][emitted++];

@@ -22,11 +22,12 @@ def test_puzzles(game):
         section = "Testing/" if testing else ""
         return game.ask(f"mod-action Play imported games/{section}{name}")
 
-    def jump(room):
+    def jump(room, stage=1):
+        game.ask(f"ini-set Play imported games/Testing/Stage {stage}")
         game.ask(f"ini-set Play imported games/Testing/Room {room}")
         action("Go to that room")
         actual = state()
-        check(actual["Status"].startswith(f"Room 1-{room:02X}"), actual)
+        check(actual["Status"].startswith(f"Room {stage}-{room:02X}"), actual)
 
     def pickup(item, attempts=1):
         for _ in range(attempts):
@@ -41,7 +42,7 @@ def test_puzzles(game):
     def log():
         return (game.config / "pe_mods.log").read_text(encoding="utf-8", errors="replace")
 
-    def use(item, slot, pose):
+    def use(item, slot, pose, retained=False):
         action("Go to the next place to use an item")
         game.adv(10)
         if pose == "piano":
@@ -99,6 +100,21 @@ def test_puzzles(game):
             sliding = (game.work / "clock-sliding.ppm").read_bytes()
             changed = sum(a != b for a, b in zip(start, sliding))
             check(1000 < changed < len(start) // 4, f"The clock close-up changed {changed} color bytes")
+        if item == "Square Crank":
+            for _ in range(12):
+                if "pool camera: 2" in log()[len(initial_log):]:
+                    break
+                game.adv(2)
+            check("pool camera: 2" in log()[len(initial_log):], "Pool camera did not load")
+            game.adv(4)
+            game.raw("capture pool-full")
+            game.adv(30)
+            check(log().count("puzzle gesture: finished") == ends, "Pool camera returned before capture")
+            game.raw("capture pool-drained")
+            full = (game.work / "pool-full.ppm").read_bytes()
+            drained = (game.work / "pool-drained.ppm").read_bytes()
+            changed = sum(a != b for a, b in zip(full, drained))
+            check(1000 < changed < len(full) // 2, f"The pool view changed {changed} color bytes")
         for _ in range(12):
             game.adv(16)
             if log().count("puzzle gesture: finished") > ends:
@@ -109,10 +125,10 @@ def test_puzzles(game):
                      if line.startswith(camera_prefix)]
             check(shots == ["6", "1", "7", "1"], f"Piano event camera sequence: {shots}")
         actual = state()
-        check(item not in actual["Pocket"], actual)
+        check((item in actual["Pocket"]) == retained, actual)
         game.adv(20)
         game.press(CROSS, 55)
-        print(f"{item}: gesture completed, item used and dialogue dismissed", flush=True)
+        print(f"{item}: gesture completed and dialogue dismissed", flush=True)
 
     game.ask("ini-set Play imported games/Scenario 1")
     action("Start", False)
@@ -128,6 +144,11 @@ def test_puzzles(game):
     check("room prop: loaded re1:object/105-2" in log(), "Imported Dining Room clock did not load")
     use("Gold Emblem", 0, "reach")
     pickup("Shield Key", 3)
+    jump(0x1B)
+    pickup("Square Crank", 3)
+    jump(1, stage=3)
+    check("room prop: loaded re1:object/301-1" in log(), "Imported pool water did not load")
+    use("Square Crank", state()["Pocket"].split(", ").index("Square Crank"), "reach", retained=True)
 
 
 def main():

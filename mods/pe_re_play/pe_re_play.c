@@ -53,11 +53,13 @@ static uint8_t s_gesture_cameras[PE_RE1_PIANO_CUTS];
 static int s_gesture_cuts;
 static ReHostRoomProp s_piano_panel;
 static ReHostRoomProp s_clock_closed, s_clock_open;
-static int s_clock_gesture, s_clock_cut;
+static ReHostRoomProp s_pool_water;
+static int s_clock_gesture, s_pool_gesture, s_prop_cut;
 
 enum { PANEL_LIFT = 5400, PANEL_RISE_START = 35, PANEL_RISE_END = 51 };
 /* Room 105 camera 5 frames the clock. Hold it through the slide, then return to play. */
 enum { CLOCK_CAMERA = 5, CLOCK_CUT_FRAME = 12, CLOCK_SLIDE_END = 36, CLOCK_GESTURE_END = 44 };
+enum { POOL_CAMERA = 2, POOL_DRAIN_START = 14, POOL_DRAIN_END = 47, POOL_GESTURE_END = 54, POOL_DROP = 1600 };
 
 static void set_room_prop(const ReHostRoomProp *prop) {
     const ReHost *host = re_host();
@@ -74,14 +76,28 @@ static void set_piano_panel(unsigned frame) {
     set_room_prop(&panel);
 }
 
+static void set_pool_water(unsigned frame) {
+    if (frame >= POOL_DRAIN_END) {
+        set_room_prop(NULL);
+        return;
+    }
+    ReHostRoomProp surface = s_pool_water;
+    if (frame > POOL_DRAIN_START)
+        surface.y += POOL_DROP * (int)(frame - POOL_DRAIN_START) / (POOL_DRAIN_END - POOL_DRAIN_START);
+    set_room_prop(&surface);
+}
+
 static void show_room_prop(void) {
-    s_piano_panel.asset_id[0] = s_clock_closed.asset_id[0] = 0;
+    s_piano_panel.asset_id[0] = s_clock_closed.asset_id[0] = s_pool_water.asset_id[0] = 0;
     if (pe_re1_piano_panel(s_session.logic, &s_piano_panel)) {
         const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED);
         set_piano_panel(open ? PANEL_RISE_END : 0);
     } else if (pe_re1_dining_clock(s_session.logic, &s_clock_closed, &s_clock_open)) {
         const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_CLOCK_OPEN);
         set_room_prop(open ? &s_clock_open : &s_clock_closed);
+    } else if (pe_re1_pool_water(s_session.logic, &s_pool_water)) {
+        const int drained = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_POOL_DRAINED);
+        set_pool_water(drained ? POOL_DRAIN_END : 0);
     } else {
         set_room_prop(NULL);
     }
@@ -126,7 +142,7 @@ static void cancel_gesture(void) {
     if (!s_gesture_frames) return;
     s_gesture_frames = 0;
     s_gesture_cuts = 0;
-    s_clock_gesture = s_clock_cut = 0;
+    s_clock_gesture = s_pool_gesture = s_prop_cut = 0;
     re_host()->player_gesture(RE_POSE_IDLE, 0, 0);
     re_host()->room_fade(128, 0, 0);
 }
@@ -138,16 +154,20 @@ static void present_item_use(uint16_t item) {
         return;
     }
     const int moves_clock = item == PE_RE1_GOLD_EMBLEM && s_clock_closed.asset_id[0];
+    const int drains_pool = item == PE_RE1_SQUARE_CRANK && s_pool_water.asset_id[0];
     if (host->struct_size < sizeof *host || !host->player_gesture) {
         if (moves_clock) set_room_prop(&s_clock_open);
+        if (drains_pool) set_room_prop(NULL);
         say(s_session.said);
         return;
     }
     s_gesture_pose = s_session.use_pose;
     s_gesture_frame = 0;
     s_clock_gesture = moves_clock;
+    s_pool_gesture = drains_pool;
     s_gesture_frames = s_gesture_pose == RE_POSE_PIANO ? 52 : 22;
     if (s_clock_gesture) s_gesture_frames = CLOCK_GESTURE_END;
+    if (s_pool_gesture) s_gesture_frames = POOL_GESTURE_END;
     s_gesture_cuts = s_gesture_pose == RE_POSE_PIANO && pe_re1_piano_cuts(s_session.logic, s_gesture_cameras);
     if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(0);
     host->room_fade(128, 0, 1);
@@ -527,7 +547,7 @@ static int on_frame(void *ctx, void *user) {
         s_cross_held = (buttons & RE_HOST_CROSS) != 0;
         s_square_held = (buttons & RE_HOST_SQUARE) != 0;
         if (++s_gesture_frame >= s_gesture_frames) {
-            if (s_gesture_cuts || s_clock_cut) show_gesture_camera(s_session.camera);
+            if (s_gesture_cuts || s_prop_cut) show_gesture_camera(s_session.camera);
             cancel_gesture();
             say(s_session.said);
             pe_mod_log(MOD_ID, "puzzle gesture: finished");
@@ -538,8 +558,8 @@ static int on_frame(void *ctx, void *user) {
                         pe_mod_log(MOD_ID, "puzzle camera: %u", (unsigned)s_gesture_cameras[i]);
             if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(s_gesture_frame);
             if (s_clock_gesture && s_gesture_frame == CLOCK_CUT_FRAME) {
-                s_clock_cut = show_gesture_camera(CLOCK_CAMERA);
-                if (s_clock_cut) pe_mod_log(MOD_ID, "clock camera: %d", CLOCK_CAMERA);
+                s_prop_cut = show_gesture_camera(CLOCK_CAMERA);
+                if (s_prop_cut) pe_mod_log(MOD_ID, "clock camera: %d", CLOCK_CAMERA);
             }
             if (s_clock_gesture && s_gesture_frame > CLOCK_CUT_FRAME && s_gesture_frame <= CLOCK_SLIDE_END) {
                 ReHostRoomProp clock = s_clock_open;
@@ -547,6 +567,12 @@ static int on_frame(void *ctx, void *user) {
                           (int)(s_gesture_frame - CLOCK_CUT_FRAME) / (CLOCK_SLIDE_END - CLOCK_CUT_FRAME);
                 set_room_prop(&clock);
             }
+            if (s_pool_gesture && s_gesture_frame == POOL_DRAIN_START) {
+                s_prop_cut = show_gesture_camera(POOL_CAMERA);
+                if (s_prop_cut) pe_mod_log(MOD_ID, "pool camera: %d", POOL_CAMERA);
+            }
+            if (s_pool_gesture && s_gesture_frame > POOL_DRAIN_START && s_gesture_frame <= POOL_DRAIN_END)
+                set_pool_water(s_gesture_frame);
             re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
         }
         if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);

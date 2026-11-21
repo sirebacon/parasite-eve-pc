@@ -324,6 +324,39 @@ static int play_gesture(void) {
     s.save_read(NULL, NULL);
     frames(1, 0);
     EXPECT(!strcmp(s.room, "re1:room/105") && s.prop.x == 18000);
+
+    *s.stage = 3;
+    *s.room_number = 1;
+    s.jump();
+    frames(1, 0);
+    EXPECT(!strcmp(s.prop.asset_id, "re1:object/301-1") && s.prop.translucent &&
+           s.prop.x == 24180 && s.prop.z == 17544 && s.prop.y == 870);
+    PeImpModel water;
+    EXPECT(!pe_imp_catalog_model(s.store, s.prop.asset_id, &water, NULL, 0));
+    EXPECT(water.parts == 1 && water.part[0].tris == 50);
+    pe_imp_model_free(&water);
+    s.next_use();
+    s.give_use();
+    const int pool_camera = s.camera;
+    frames(1, RE_HOST_SQUARE);
+    EXPECT(s.busy);
+    s.busy = 0;
+    s.choice = 0;
+    frames(8, 0);
+    EXPECT(s.hold && s.gesture == RE_POSE_REACH && s.prop.y == 870);
+    frames(22, 0);
+    EXPECT(s.hold && s.camera == 2 && s.prop.y > 870);
+    frames(20, 0);
+    EXPECT(s.hold && !s.prop.asset_id[0]);
+    frames(8, 0);
+    EXPECT(!s.hold && s.camera == pool_camera && !s.prop.asset_id[0] &&
+           s.busy && strstr(s.text, "pool drained"));
+    EXPECT(!pe_re_save_decode(s.progress->data, &saved) && saved.camera == pool_camera &&
+           pe_re_flag(&saved.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_POOL_DRAINED) &&
+           pe_re_has(&saved.progress, PE_RE1_SQUARE_CRANK));
+    s.save_read(NULL, NULL);
+    frames(1, 0);
+    EXPECT(!strcmp(s.room, "re1:room/301") && !s.prop.asset_id[0]);
     return 0;
 }
 

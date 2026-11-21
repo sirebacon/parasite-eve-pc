@@ -18,6 +18,7 @@ typedef enum { RE_POSE_IDLE, RE_POSE_REACH, RE_POSE_PIANO } ReHostPose;
 typedef struct {
     char asset_id[PE_IMP_ID_MAX];
     int x, y, z, yaw;
+    int translucent;
 } ReHostRoomProp;
 
 /* Room IDs refer to the shared catalog. Positions are in RE room units.
