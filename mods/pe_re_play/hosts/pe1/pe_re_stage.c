@@ -212,6 +212,34 @@ static int spawn_on_floor(int floor, int require_clear) {
     return 1;
 }
 
+static RenderRotationOverride s_gesture[2];
+
+void pe_re_stage_gesture(ReHostPose pose, unsigned frame, unsigned frames) {
+    memset(s_gesture, 0, sizeof s_gesture);
+    if (pose == RE_POSE_IDLE || !frames || frame >= frames) return;
+    const double pi = acos(-1.0);
+    const double t = (double)frame / frames;
+    const double lift = sin(pi * t);
+    const double tap = pose == RE_POSE_PIANO ? 60 * sin(10 * pi * t) : 0;
+    /* Aya's upper-arm slots correspond to bones 4 and 14 in the skin builder. */
+    s_gesture[0] = (RenderRotationOverride){
+        .z = (uint16_t)(int)lround((420 + tap) * lift), .matrix_index = 4, .flags = 4
+    };
+    if (pose == RE_POSE_PIANO) {
+        s_gesture[1] = (RenderRotationOverride){
+            .z = (uint16_t)(int)lround((390 - tap) * lift), .matrix_index = 14, .flags = 4
+        };
+    }
+}
+
+static int on_gesture_draw(void *ctx, void *user) {
+    (void)user;
+    const PeHookActorDraw *draw = ctx;
+    if (s_show && s_hold && draw->actor == g_PlayerEntity && draw->rotation_offsets && s_gesture[0].flags)
+        memcpy(draw->rotation_offsets, s_gesture, sizeof s_gesture);
+    return 0;
+}
+
 static int on_move(void *ctx, void *user) {
     (void)user;
     const FieldActor *aya = ctx;
@@ -1051,6 +1079,7 @@ void pe_re_stage_init(const char *mod_id, const char *store) {
     pe_hook_add(PE_HOOK_FIELD_BACKGROUND, on_background, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(PE_HOOK_FIELD_CAMERA, on_camera, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(PE_HOOK_FIELD_MOVE, on_move, NULL, PE_PRIORITY_LATE, mod_id);
+    pe_hook_add(PE_HOOK_ACTOR_RENDER, on_gesture_draw, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(PE_HOOK_SCENE_START, on_scene, NULL, PE_PRIORITY_LATE, mod_id);
     pe_hook_add(pe_event_id(PE_EVENT_IMPORT_PUBLISHED), on_import_published, NULL, PE_PRIORITY_NORMAL, mod_id);
 }

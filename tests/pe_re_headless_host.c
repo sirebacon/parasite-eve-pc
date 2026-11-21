@@ -21,7 +21,9 @@ static struct {
     int choice, busy, menu;
     uint16_t buttons;
     ReHostCallback frame, save_read, new_game, save_committed;
-    PeMenuAction start, next_door, jump, typewriter, give_ribbon;
+    PeMenuAction start, next_door, jump, typewriter, give_ribbon, next_use, give_use;
+    ReHostPose gesture;
+    unsigned gesture_frame;
     int *scenario, *stage, *room_number;
     const PeExtensionSection *progress;
     const PeRePlayApi *api;
@@ -78,6 +80,10 @@ static int choose(const char *title, const char *const labels[], int count, int 
 static int choice(void) { const int result = s.choice; s.choice = -1; return result; }
 static int busy(void) { return s.busy; }
 static void forget(void) { s.busy = 0; s.choice = -1; }
+static void gesture(ReHostPose pose, unsigned frame, unsigned frames) {
+    s.gesture = pose;
+    s.gesture_frame = frames ? frame : 0;
+}
 static int arm(void) { return s.backdrop = s.active; }
 static void release(void) { s.backdrop = 0; }
 static void bind(const char *mod_id, ReHostCallback frame, ReHostCallback save_read, ReHostCallback new_game) {
@@ -97,7 +103,7 @@ const ReHost *re_host(void) {
         .set_placements = placements, .say = say, .choose = choose, .dialogue_choice = choice,
         .dialogue_busy = busy, .forget_dialogue = forget, .field_free = field_free, .held_buttons = buttons,
         .consume_native_interact = noop, .open_save_screen = open_save, .native_menu_active = menu_active,
-        .arm_backdrop = arm, .release_backdrop = release, .bind_lifecycle = bind,
+        .arm_backdrop = arm, .release_backdrop = release, .bind_lifecycle = bind, .player_gesture = gesture,
     };
     return &host;
 }
@@ -113,6 +119,8 @@ int pe_menu_register_action(const char *sub, const char *label, const char *desc
     if (!strcmp(label, "Go to that room")) s.jump = action;
     if (!strcmp(label, "Go to the next typewriter")) s.typewriter = action;
     if (!strcmp(label, "Give an Ink Ribbon")) s.give_ribbon = action;
+    if (!strcmp(label, "Go to the next place to use an item")) s.next_use = action;
+    if (!strcmp(label, "Give the item used there")) s.give_use = action;
     return 0;
 }
 int pe_menu_register_int(const char *sub, const char *label, const char *desc,
@@ -237,4 +245,39 @@ int re_headless_smoke(const char *store, unsigned scenario) {
     const int result = play(scenario);
     pe_mod_pe_re_play.shutdown();
     return result;
+}
+
+static int play_gesture(void) {
+    EXPECT(s.start && s.frame && s.scenario && s.stage && s.room_number && s.jump && s.next_use && s.give_use);
+    *s.scenario = 1;
+    s.start();
+    EXPECT(s.active && !strcmp(s.room, "re1:room/106"));
+
+    *s.stage = 1;
+    *s.room_number = PE_RE1_PIANO_ROOM;
+    s.jump();
+    frames(1, 0);
+    s.next_use();
+    s.give_use();
+    frames(1, RE_HOST_SQUARE);
+    EXPECT(s.busy);
+    s.busy = 0;
+    s.choice = 0;
+    frames(8, 0);
+    EXPECT(s.hold && s.gesture == RE_POSE_PIANO && s.gesture_frame == 8 && !s.busy);
+    frames(60, RE_HOST_CROSS);
+    EXPECT(!s.hold && s.gesture == RE_POSE_IDLE && s.busy && strstr(s.text, "hidden alcove"));
+    PeReSaved saved;
+    EXPECT(!pe_re_save_decode(s.progress->data, &saved) &&
+           pe_re_flag(&saved.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED));
+    return 0;
+}
+
+int re_headless_re1_gesture(const char *store) {
+    memset(&s, 0, sizeof s);
+    s.store = store;
+    EXPECT(!pe_mod_pe_re_play.init());
+    const int rc = play_gesture();
+    pe_mod_pe_re_play.shutdown();
+    return rc;
 }

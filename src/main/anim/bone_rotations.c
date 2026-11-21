@@ -8,6 +8,11 @@ static GteShortVector g_AnimBoneAngles[256];
 /* Apply the two per-object rotation overrides on top of the decoded keyframe
  * angles, then rebuild the affected bone matrices. */
 void Anim_BuildRotationMatrices(RenderObjectEntity *object, RenderAnimationDataHeader *data, int frame) {
+    Anim_BuildRotationMatricesWithOffsets(object, data, frame, NULL);
+}
+
+void Anim_BuildRotationMatricesWithOffsets(RenderObjectEntity *object, RenderAnimationDataHeader *data, int frame,
+                                           const RenderRotationOverride offsets[2]) {
     GteShortVector *angles = g_AnimBoneAngles;
     int i;
 
@@ -26,24 +31,25 @@ void Anim_BuildRotationMatrices(RenderObjectEntity *object, RenderAnimationDataH
         Anim_DecodeBoneRotationsByte(object, data, (s16)frame);
     }
 
-    for (i = 0; i < 2; i++) {
-        int index = object->rotation_overrides[i].matrix_index;
+    for (i = 0; i < (offsets ? 4 : 2); i++) {
+        const RenderRotationOverride *rotation = i < 2 ? &object->rotation_overrides[i] : &offsets[i - 2];
+        const int index = rotation->matrix_index;
 
-        if (index > 0) {
-            if (object->rotation_overrides[i].flags & 0x08) {
-                ((GteShortVector *)angles)[index].x = object->rotation_overrides[i].x;
-            } else if (object->rotation_overrides[i].flags & 0x01) {
-                ((GteShortVector *)angles)[index].x += object->rotation_overrides[i].x;
+        if (index > 0 && (i < 2 || index <= data->last_bone_index)) {
+            if (rotation->flags & 0x08) {
+                ((GteShortVector *)angles)[index].x = rotation->x;
+            } else if (rotation->flags & 0x01) {
+                ((GteShortVector *)angles)[index].x += rotation->x;
             }
-            if (object->rotation_overrides[i].flags & 0x10) {
-                ((GteShortVector *)angles)[index].y = object->rotation_overrides[i].y;
-            } else if (object->rotation_overrides[i].flags & 0x02) {
-                ((GteShortVector *)angles)[index].y += object->rotation_overrides[i].y;
+            if (rotation->flags & 0x10) {
+                ((GteShortVector *)angles)[index].y = rotation->y;
+            } else if (rotation->flags & 0x02) {
+                ((GteShortVector *)angles)[index].y += rotation->y;
             }
-            if (object->rotation_overrides[i].flags & 0x20) {
-                ((GteShortVector *)angles)[index].z = object->rotation_overrides[i].z;
-            } else if (object->rotation_overrides[i].flags & 0x04) {
-                ((GteShortVector *)angles)[index].z += object->rotation_overrides[i].z;
+            if (rotation->flags & 0x20) {
+                ((GteShortVector *)angles)[index].z = rotation->z;
+            } else if (rotation->flags & 0x04) {
+                ((GteShortVector *)angles)[index].z += rotation->z;
             }
             /* The original slot offset selects the same work vector. */
             RotMatrixYXZ(&angles[index],

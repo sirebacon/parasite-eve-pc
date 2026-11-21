@@ -748,6 +748,13 @@ if(BUILD_TESTING)
             set_tests_properties(enemy-import-nemesis PROPERTIES SKIP_RETURN_CODE 77
                 TIMEOUT 900 LABELS "game-assets;mods")
         endif()
+        if(TARGET test-mod-re-session AND "pe_re_play" IN_LIST PE_MOD_LIST)
+            add_test(NAME re1-puzzle-gestures COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/re1_puzzle_gestures.py $<TARGET_FILE:parasite-eve-pc>
+                $<TARGET_FILE:test-mod-re-session> ${CMAKE_BINARY_DIR}/re1-puzzle-gesture-evidence)
+            set_tests_properties(re1-puzzle-gestures PROPERTIES SKIP_RETURN_CODE 77
+                TIMEOUT 900 LABELS "game-assets;mods")
+        endif()
         if(PE_MODS AND "pe_lang" IN_LIST PE_MOD_LIST)
             # The text renderer with language packs made from the disc: stretches, name letters,
             # a saved name read back, and English as the game drew it before the renderer.

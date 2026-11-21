@@ -125,6 +125,7 @@ typedef struct PeHookFieldCamera {
 typedef struct PeHookActorDraw {
     void *actor;         /* FieldActor * */
     const void *view;    /* the entity view matrix (GteMatrix, then the projection distance) */
+    void *rotation_offsets; /* two temporary RenderRotationOverride entries, or NULL */
 } PeHookActorDraw;
 
 typedef struct PeHookStealResult {

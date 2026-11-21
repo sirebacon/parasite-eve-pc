@@ -248,17 +248,18 @@ static PeReChange zone_act(PeReSession *s, const char *store, const PeReZoneHit 
 typedef struct {
     unsigned room, zone, kind, item, done;
     int requires;
+    ReHostPose pose;
     const char *hint, *result;
 } Re1ItemUse;
 
 static const Re1ItemUse k_re1_item_uses[] = {
-    {PE_RE1_TERRARIUM_ROOM, 1, 2, PE_RE1_CHEMICAL, PE_RE1_TERRARIUM_CLEARED, -1,
+    {PE_RE1_TERRARIUM_ROOM, 1, 2, PE_RE1_CHEMICAL, PE_RE1_TERRARIUM_CLEARED, -1, RE_POSE_REACH,
      "The pump feeds water to the vines. Its lid is open.", "The chemical killed the vines."},
-    {PE_RE1_PIANO_ROOM, 2, 2, PE_RE1_MUSIC_NOTES, PE_RE1_PIANO_PLAYED, -1,
+    {PE_RE1_PIANO_ROOM, 2, 2, PE_RE1_MUSIC_NOTES, PE_RE1_PIANO_PLAYED, -1, RE_POSE_PIANO,
      "A piano. Sheet music might help.", "The music opened a hidden alcove."},
-    {PE_RE1_PIANO_ROOM, 10, 2, PE_RE1_WOOD_EMBLEM, PE_RE1_PIANO_EMBLEM_PLACED, PE_RE1_PIANO_PLAYED,
+    {PE_RE1_PIANO_ROOM, 10, 2, PE_RE1_WOOD_EMBLEM, PE_RE1_PIANO_EMBLEM_PLACED, PE_RE1_PIANO_PLAYED, RE_POSE_REACH,
      "The pedestal takes an emblem.", "The Wooden Emblem frees the Gold Emblem."},
-    {PE_RE1_DINING_ROOM, 13, 9, PE_RE1_GOLD_EMBLEM, PE_RE1_CLOCK_OPEN, -1,
+    {PE_RE1_DINING_ROOM, 13, 9, PE_RE1_GOLD_EMBLEM, PE_RE1_CLOCK_OPEN, -1, RE_POSE_REACH,
      "An emblem fits in the recess above the fireplace.", "The clock moved, revealing the Shield Key."},
 };
 
@@ -412,6 +413,7 @@ static const Re1ItemUse *re1_item_use_at(const PeReSession *s, uint16_t item) {
 
 PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
     char name[48];
+    s->use_pose = RE_POSE_IDLE;
     s->said[0] = 0;
     if (!s->game || !pe_re_has(&s->progress, item)) return PE_RE_STAY;
     const Re1ItemUse *use = re1_item_use_at(s, item);
@@ -419,6 +421,7 @@ PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
         pe_re_lose(&s->progress, item, 1);
         pe_re_flag_set(&s->progress.flags, PE_RE1_FG_PREVIEW, use->done, 1);
         s->uses++;
+        s->use_pose = use->pose;
         snprintf(s->said, sizeof s->said, "%s", use->result);
         return PE_RE_SAID;
     }

@@ -13,6 +13,7 @@
 #include "pe_re_rules.h"
 #include "pe_re_zone.h"
 #include "pe_services.h"
+#include "re_host.h"
 
 #define PE_RE_GAMES 3
 #define PE_RE_STAGE_HERE 0xFFu        /* a door's stage: stay on this stage */
@@ -73,6 +74,7 @@ typedef struct {
     int auto_message;                 /* the walk-in message zone she's in (shown once), -1 */
     int events;                       /* events zones started */
     int uses;                         /* items used on the room */
+    ReHostPose use_pose;               /* presentation requested by the last item use */
 } PeReSession;
 
 /* PE_RE_SAID: nothing moved, but `said` has something to show (a locked door, a pickup, a message).

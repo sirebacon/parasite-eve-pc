@@ -13,10 +13,12 @@ typedef int (*ReHostCallback)(void *event, void *user);
 enum { RE_HOST_CROSS = 0x0040, RE_HOST_SQUARE = 0x0080 };
 #define RE_HOST_DIALOGUE_CHOICES 80
 
+typedef enum { RE_POSE_IDLE, RE_POSE_REACH, RE_POSE_PIANO } ReHostPose;
+
 /* Room IDs refer to the shared catalog. Positions are in RE room units.
  * A full turn is 4096 facing units, with 0 facing -z.
  * The adapter may resolve pictures, cameras and masks directly from that catalog.
- * All callbacks in this revision are required. Append new callbacks at the end. */
+ * Callbacks are required unless marked optional. Append new callbacks at the end. */
 typedef struct ReHost {
     uint32_t struct_size;
     void (*init)(const char *mod_id, const char *store);
@@ -58,6 +60,8 @@ typedef struct ReHost {
     void (*release_backdrop)(void);
     void (*bind_lifecycle)(const char *mod_id, ReHostCallback frame, ReHostCallback save_read,
                            ReHostCallback new_game);
+    /* Optional presentation. Frame counts are host frame ticks. IDLE releases the pose. */
+    void (*player_gesture)(ReHostPose pose, unsigned frame, unsigned frames);
 } ReHost;
 
 /* The host links exactly one implementation. The table lasts for the process. */

@@ -346,9 +346,13 @@ void Entity_FrameUpdate(void) {
             if (entity == g_PlayerEntity && (g_GameState.flags & 0x40000)) {
                 continue;
             }
-            if (draw && PE_HOOK(PE_HOOK_ACTOR_RENDER, (&(PeHookActorDraw){entity, g_EntityRenderScratch}))) {
+#ifdef PE_MODS
+            RenderRotationOverride rotation_offsets[2] = {0};
+            PeHookActorDraw draw_event = {entity, g_EntityRenderScratch, rotation_offsets};
+            if (draw && PE_HOOK(PE_HOOK_ACTOR_RENDER, &draw_event)) {
                 continue;   /* a mod's own actor (no game model): the mod drew it */
             }
+#endif
             if (entity->model_state.allocation_active != 0) {
                 entity->render_object.header->scale = entity->move_speed;
             }
@@ -367,7 +371,12 @@ void Entity_FrameUpdate(void) {
                 object = &entity->render_object;
                 Render_InitRoomPrimState(object);
                 if (entity->action_data != 0) {
+#ifdef PE_MODS
+                    Anim_BuildRotationMatricesWithOffsets(object, entity->action_data, (s16)entity->anim.parts.integer,
+                                                          rotation_offsets);
+#else
                     Anim_BuildRotationMatrices(object, entity->action_data, (s16)entity->anim.parts.integer);
+#endif
                 }
                 Render_TransformVertices(object);
                 Render_TransformSkinnedVertices(object, g_EntityRenderScratch);

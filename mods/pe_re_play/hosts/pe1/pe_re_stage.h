@@ -1,5 +1,7 @@
 #ifndef PE_RE_STAGE_H
 #define PE_RE_STAGE_H
+
+#include "../../re_host.h"
 /* An imported room on the field screen (grown from the pe_rooms prototype): its picture for one
  * camera behind everything, its foreground masks at depth, the game's own camera for drawing Aya,
  * and her position walked in the room's coordinates against its collision. Aya's native position
@@ -31,6 +33,7 @@ void pe_re_stage_set_placements(const PeReEnemyPlacement *placements, int count)
 /* A door's transition: the picture's brightness (128 full, 0 black), a black curtain in front of
  * everything (Aya too), and no walking while `hold`. */
 void pe_re_stage_fade(int shade, int curtain, int hold);
+void pe_re_stage_gesture(ReHostPose pose, unsigned frame, unsigned frames);
 /* Aya's size in the room, percent of an RE person's height (100: as tall as Leon). */
 void pe_re_stage_set_size(int percent);
 double pe_re_stage_scale(void);                    /* room units per PE unit, for the status line */

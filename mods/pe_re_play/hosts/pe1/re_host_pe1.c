@@ -77,6 +77,7 @@ const ReHost *re_host(void) {
         .arm_backdrop = pe_re_stage_backdrop_arm,
         .release_backdrop = pe_re_stage_backdrop_release,
         .bind_lifecycle = bind_lifecycle,
+        .player_gesture = pe_re_stage_gesture,
     };
     return &host;
 }

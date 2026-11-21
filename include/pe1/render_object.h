@@ -673,6 +673,8 @@ void Render_Noop(void);
 
 void Render_UpdateClutTable(RenderObjectEntity *object, s16 force, s16 buffer_index);
 void Anim_BuildRotationMatrices(RenderObjectEntity *object, RenderAnimationDataHeader *data, int frame);
+void Anim_BuildRotationMatricesWithOffsets(RenderObjectEntity *object, RenderAnimationDataHeader *data, int frame,
+                                           const RenderRotationOverride offsets[2]);
 void Anim_DecodeBoneRotationsByte(RenderObjectEntity *object, RenderAnimationDataHeader *animation_data,
                                   s16 frame);
 void Anim_DecodeBoneRotationsShort(RenderObjectEntity *object, RenderAnimationDataHeader *animation_data,

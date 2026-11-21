@@ -18,6 +18,7 @@
 #include "pe_src_re2.h"
 
 int re_headless_smoke(const char *store, unsigned scenario);
+int re_headless_re1_gesture(const char *store);
 
 static int s_fail;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); s_fail = 1; } } while (0)
@@ -333,6 +334,8 @@ static void re1_mansion(const char *cue) {
         if (armor_route) CHECK(re1_shield_route(&session, store));
         pe_re_session_end(&session);
     } else CHECK(0);
+
+    CHECK(!re_headless_re1_gesture(store));
 
     /* Jill's room 40F registers two triggers under the character flag check. */
     PeImpRoomLogic *variant = NULL;

@@ -47,6 +47,8 @@ static const PeExtensionSection s_section = {"pe_re_play/progress", PE_RE_SAVE_V
 static int s_registered, s_enabled, s_resume;
 static int s_playing, s_cross_held, s_square_held, s_reshown;
 static char s_status[200] = "Not playing.";
+static unsigned s_gesture_frame, s_gesture_frames;
+static ReHostPose s_gesture_pose;
 
 static void list_games(void) {
     if (s_listed) return;
@@ -66,6 +68,27 @@ static const char *game_name(unsigned i) {
 /* In the game's dialogue band; a toast if no box can be had (the font not loaded yet). */
 static void say(const char *text) {
     if (!re_host()->say(text)) pe_toast(text);
+}
+
+static void cancel_gesture(void) {
+    if (!s_gesture_frames) return;
+    s_gesture_frames = 0;
+    re_host()->player_gesture(RE_POSE_IDLE, 0, 0);
+    re_host()->room_fade(128, 0, 0);
+}
+
+static void present_item_use(void) {
+    const ReHost *host = re_host();
+    if (s_session.use_pose == RE_POSE_IDLE || host->struct_size < sizeof *host || !host->player_gesture) {
+        say(s_session.said);
+        return;
+    }
+    s_gesture_pose = s_session.use_pose;
+    s_gesture_frame = 0;
+    s_gesture_frames = s_gesture_pose == RE_POSE_PIANO ? 52 : 22;
+    host->room_fade(128, 0, 1);
+    host->player_gesture(s_gesture_pose, 0, s_gesture_frames);
+    pe_mod_log(MOD_ID, "puzzle gesture: %s", s_gesture_pose == RE_POSE_PIANO ? "piano" : "reach");
 }
 
 /* ---- enemies: reported, not fought here ("re_play" in pe_services.h) ----
@@ -142,6 +165,7 @@ static int pause_for_battle(void) {
         pe_re_door_busy() || re_host()->dialogue_busy() || s_typing != TYPE_NONE) return -1;
     re_host()->player_pose(&s_session.x, &s_session.z, &s_session.facing);
     s_session.floor = re_host()->player_floor();
+    cancel_gesture();
     s_battle_paused = 1;
     re_host()->arm_backdrop();                  /* the battle plays in front of this room */
     re_host()->hide_room();
@@ -238,7 +262,7 @@ static void picked(void) {
     if (mode == PICK_USE) {
         char name[48];
         pe_re_item_name(s_session.items, s_pick_item[c], name, sizeof name);
-        if (pe_re_session_use(&s_session, s_pick_item[c]) == PE_RE_SAID) say(s_session.said);
+        if (pe_re_session_use(&s_session, s_pick_item[c]) == PE_RE_SAID) present_item_use();
         else snprintf(s_status, sizeof s_status, "Used the %s.", name);
         return;
     }
@@ -289,6 +313,7 @@ static int keep_progress(void) {
 }
 
 static void stop(void) {
+    cancel_gesture();
     pe_re_door_cancel();
     re_host()->forget_dialogue();
     s_typing = TYPE_NONE;
@@ -397,6 +422,7 @@ static int on_frame(void *ctx, void *user) {
     }
     if (re_host()->native_menu_active()) return 0;    /* PE's own menu (the save screen) has the pad */
     if (!re_host()->room_active()) {                /* PE loaded a room of its own: it's only the shell */
+        cancel_gesture();
         re_host()->forget_dialogue();
         if (!re_host()->field_free()) return 0;         /* once it has settled, the imported room again */
         s_reshown++;
@@ -431,7 +457,19 @@ static int on_frame(void *ctx, void *user) {
         s_session.key_trg = key & ~s_session.key;
         s_session.key = key;
     }
-    picked();
+    if (!s_gesture_frames) picked();
+    if (s_gesture_frames) {
+        const unsigned buttons = re_host()->held_buttons();
+        s_cross_held = (buttons & RE_HOST_CROSS) != 0;
+        s_square_held = (buttons & RE_HOST_SQUARE) != 0;
+        if (++s_gesture_frame >= s_gesture_frames) {
+            cancel_gesture();
+            say(s_session.said);
+            pe_mod_log(MOD_ID, "puzzle gesture: finished");
+        } else re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
+        if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);
+        return 0;
+    }
     switch (pe_re_session_tick(&s_session)) {     /* the room's scripts, a frame */
     case PE_RE_SAID: say(s_session.said); break;
     case PE_RE_ZONE: zone_handed(); break;
@@ -608,6 +646,7 @@ static void to_room(void) {
         snprintf(s_status, sizeof s_status, "Can't go there: %s.", why);
         return;
     }
+    cancel_gesture();
     pe_re_door_cancel();
     s_room_reported = 0;
     re_host()->set_placements(NULL, 0);
@@ -649,6 +688,7 @@ static void text_status(char *out, unsigned size) {
 
 static int init(void) {
     if (pe_mod_path(s_store, sizeof s_store, "import/store")) return 1;
+    s_listed = 0;
     re_host()->init(MOD_ID, s_store);
     pe_menu_begin(PAGE);
     pe_menu_top_page(PAGE, "Walk the rooms of a game you imported, as Aya.", 63);
