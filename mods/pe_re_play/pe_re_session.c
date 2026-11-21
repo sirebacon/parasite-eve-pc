@@ -181,6 +181,7 @@ void pe_re_session_place(PeReSession *s, double x, double z, int facing) {
 }
 
 enum { CREST_PASSAGE_ROOM = 0x1A, CREST_GATE_ROOM = 0x1B, CREST_GATE_LOCK = 0x97 };
+enum { COURTYARD_STAGE = 2, POOL_ROOM = 1, WATERFALL_ROOM = 2 };
 
 static int re1_use_done(const PeReSession *s, unsigned flag) {
     return pe_re_flag(&s->progress.flags, PE_RE1_FG_PREVIEW, flag);
@@ -200,6 +201,11 @@ static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *
     if (s->logic->game == PE_IMP_RE1 && s->stage == 0 && s->room == CREST_PASSAGE_ROOM &&
         d->room == CREST_GATE_ROOM && d->lock_id == CREST_GATE_LOCK && re1_empty_crest_slots(s)) {
         snprintf(s->said, sizeof s->said, "The gate is locked. Fit the four crests into the panel.");
+        return PE_RE_SAID;
+    }
+    if (s->logic->game == PE_IMP_RE1 && s->stage == COURTYARD_STAGE && s->room == POOL_ROOM &&
+        d->stage == PE_RE_STAGE_HERE && d->room == WATERFALL_ROOM && !re1_use_done(s, PE_RE1_POOL_DRAINED)) {
+        snprintf(s->said, sizeof s->said, "The pool is full. The crank mechanism might lower the water.");
         return PE_RE_SAID;
     }
     /* In RE1, key type zero permits passage even when the source door carries a lock ID. */
@@ -264,35 +270,38 @@ static PeReChange zone_act(PeReSession *s, const char *store, const PeReZoneHit 
 
 /* Item interactions use the examine zones and script triggers imported from each RDT. */
 typedef struct {
-    unsigned room, zone, kind, item, done;
+    unsigned stage, room, zone, kind, item, done;
     int requires;
     ReHostPose pose;
     const char *hint, *result;
+    int reusable;
 } Re1ItemUse;
 
 static const Re1ItemUse k_re1_item_uses[] = {
-    {PE_RE1_TERRARIUM_ROOM, 1, 2, PE_RE1_CHEMICAL, PE_RE1_TERRARIUM_CLEARED, -1, RE_POSE_REACH,
-     "The pump feeds water to the vines. Its lid is open.", "The chemical killed the vines."},
-    {PE_RE1_PIANO_ROOM, 2, 2, PE_RE1_MUSIC_NOTES, PE_RE1_PIANO_PLAYED, -1, RE_POSE_PIANO,
-     "A piano. Sheet music might help.", "The music opened a hidden alcove."},
-    {PE_RE1_PIANO_ROOM, 10, 2, PE_RE1_WOOD_EMBLEM, PE_RE1_PIANO_EMBLEM_PLACED, PE_RE1_PIANO_PLAYED, RE_POSE_REACH,
-     "The pedestal takes an emblem.", "The Wooden Emblem frees the Gold Emblem."},
-    {PE_RE1_DINING_ROOM, 13, 9, PE_RE1_GOLD_EMBLEM, PE_RE1_CLOCK_OPEN, -1, RE_POSE_REACH,
-     "An emblem fits in the recess above the fireplace.", "The clock moved, revealing the Shield Key."},
-    {CREST_PASSAGE_ROOM, 3, 7, PE_RE1_SUN_CREST, PE_RE1_SUN_PLACED, -1, RE_POSE_REACH,
-     NULL, "The Sun Crest fits into the panel."},
-    {CREST_PASSAGE_ROOM, 4, 7, PE_RE1_MOON_CREST, PE_RE1_MOON_PLACED, -1, RE_POSE_REACH,
-     NULL, "The Moon Crest fits into the panel."},
-    {CREST_PASSAGE_ROOM, 5, 7, PE_RE1_STAR_CREST, PE_RE1_STAR_PLACED, -1, RE_POSE_REACH,
-     NULL, "The Star Crest fits into the panel."},
-    {CREST_PASSAGE_ROOM, 6, 7, PE_RE1_WIND_CREST, PE_RE1_WIND_PLACED, -1, RE_POSE_REACH,
-     NULL, "The Wind Crest fits into the panel."},
+    {0, PE_RE1_TERRARIUM_ROOM, 1, 2, PE_RE1_CHEMICAL, PE_RE1_TERRARIUM_CLEARED, -1, RE_POSE_REACH,
+     "The pump feeds water to the vines. Its lid is open.", "The chemical killed the vines.", 0},
+    {0, PE_RE1_PIANO_ROOM, 2, 2, PE_RE1_MUSIC_NOTES, PE_RE1_PIANO_PLAYED, -1, RE_POSE_PIANO,
+     "A piano. Sheet music might help.", "The music opened a hidden alcove.", 0},
+    {0, PE_RE1_PIANO_ROOM, 10, 2, PE_RE1_WOOD_EMBLEM, PE_RE1_PIANO_EMBLEM_PLACED, PE_RE1_PIANO_PLAYED, RE_POSE_REACH,
+     "The pedestal takes an emblem.", "The Wooden Emblem frees the Gold Emblem.", 0},
+    {0, PE_RE1_DINING_ROOM, 13, 9, PE_RE1_GOLD_EMBLEM, PE_RE1_CLOCK_OPEN, -1, RE_POSE_REACH,
+     "An emblem fits in the recess above the fireplace.", "The clock moved, revealing the Shield Key.", 0},
+    {0, CREST_PASSAGE_ROOM, 3, 7, PE_RE1_SUN_CREST, PE_RE1_SUN_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Sun Crest fits into the panel.", 0},
+    {0, CREST_PASSAGE_ROOM, 4, 7, PE_RE1_MOON_CREST, PE_RE1_MOON_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Moon Crest fits into the panel.", 0},
+    {0, CREST_PASSAGE_ROOM, 5, 7, PE_RE1_STAR_CREST, PE_RE1_STAR_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Star Crest fits into the panel.", 0},
+    {0, CREST_PASSAGE_ROOM, 6, 7, PE_RE1_WIND_CREST, PE_RE1_WIND_PLACED, -1, RE_POSE_REACH,
+     NULL, "The Wind Crest fits into the panel.", 0},
+    {COURTYARD_STAGE, POOL_ROOM, 4, 7, PE_RE1_SQUARE_CRANK, PE_RE1_POOL_DRAINED, -1, RE_POSE_REACH,
+     "There is a square socket in the pool mechanism.", "The pool drained. The passage across is clear.", 1},
 };
 
 static const Re1ItemUse *re1_item_use(const PeReSession *s, const PeImpTrigger *t) {
     for (size_t i = 0; i < sizeof k_re1_item_uses / sizeof *k_re1_item_uses; i++) {
         const Re1ItemUse *use = &k_re1_item_uses[i];
-        if (s->stage == 0 && s->room == use->room && t->zone.id == use->zone && t->zone.sce == use->kind &&
+        if (s->stage == use->stage && s->room == use->room && t->zone.id == use->zone && t->zone.sce == use->kind &&
             (use->requires < 0 || re1_use_done(s, (unsigned)use->requires))) return use;
     }
     return NULL;
@@ -522,7 +531,7 @@ PeReChange pe_re_session_tick(PeReSession *s) {
 }
 
 static const Re1ItemUse *re1_item_use_at(const PeReSession *s, uint16_t item) {
-    if (!s->logic || s->logic->game != PE_IMP_RE1 || s->stage != 0) return NULL;
+    if (!s->logic || s->logic->game != PE_IMP_RE1) return NULL;
     uint32_t count = 0;
     pe_imp_logic_section(s->logic, PE_IMP_LOGIC_TRIG, &count, NULL);
     double fx, fz;
@@ -544,7 +553,7 @@ PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
     if (!s->game || !pe_re_has(&s->progress, item)) return PE_RE_STAY;
     const Re1ItemUse *use = re1_item_use_at(s, item);
     if (use) {
-        pe_re_lose(&s->progress, item, 1);
+        if (!use->reusable) pe_re_lose(&s->progress, item, 1);
         pe_re_flag_set(&s->progress.flags, PE_RE1_FG_PREVIEW, use->done, 1);
         s->uses++;
         s->use_pose = use->pose;

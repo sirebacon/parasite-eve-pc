@@ -205,6 +205,40 @@ static int re1_shield_route(PeReSession *s, const char *store) {
     return 1;
 }
 
+static void re1_guardhouse_route(PeReSession *s, const char *store) {
+    char why[200] = "";
+    CHECK(pe_re_session_step(s, store, 5650, 2000, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_SQUARE_CRANK));
+    static const unsigned to_pool[] = {0x300, 0x301};
+    if (!re1_route_walk(s, store, to_pool, sizeof to_pool / sizeof *to_pool)) { CHECK(0); return; }
+    CHECK(re1_route_door(s, store, 0x302, PE_RE_SAID) && strstr(s->said, "pool is full"));
+    const int uses = s->uses;
+    CHECK(pe_re_session_use(s, PE_RE1_SQUARE_CRANK) == PE_RE_SAID &&
+          s->uses == uses && pe_re_has(&s->progress, PE_RE1_SQUARE_CRANK));
+    CHECK(pe_re_session_step(s, store, 12100, 17950, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "square socket"));
+    CHECK(pe_re_session_use(s, PE_RE1_SQUARE_CRANK) == PE_RE_SAID && s->use_pose == RE_POSE_REACH &&
+          s->uses == uses + 1 && pe_re_has(&s->progress, PE_RE1_SQUARE_CRANK) && strstr(s->said, "pool drained"));
+    CHECK(pe_re_session_use(s, PE_RE1_SQUARE_CRANK) == PE_RE_SAID &&
+          s->uses == uses + 1 && pe_re_has(&s->progress, PE_RE1_SQUARE_CRANK));
+
+    uint8_t bytes[PE_RE_SAVE_SIZE];
+    PeReSaved saved;
+    PeReSession resumed;
+    pe_re_save_encode(s, 1, bytes);
+    if (pe_re_save_decode(bytes, &saved) || pe_re_session_resume(&resumed, store, &saved, why, sizeof why)) {
+        CHECK(0);
+        return;
+    }
+    CHECK(pe_re_has(&resumed.progress, PE_RE1_SQUARE_CRANK));
+    CHECK(pe_re_session_step(&resumed, store, 12100, 17950, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(resumed.said, "pool drained"));
+    static const unsigned to_guardhouse[] = {0x302, 0x304, 0x400};
+    CHECK(re1_route_walk(&resumed, store, to_guardhouse, sizeof to_guardhouse / sizeof *to_guardhouse));
+    pe_re_session_end(&resumed);
+    printf("RE1 Jill: Square Crank, pool drainage reload and Guardhouse entry\n");
+}
+
 static void re1_crest_route(PeReSession *s, const char *store) {
     static const unsigned to_sun[] = {0x20e, 0x20d, 0x204, 0x205};
     static const unsigned to_wind[] = {0x204, 0x203, 0x106, 0x105, 0x104, 0x103, 0x10d};
@@ -251,10 +285,12 @@ static void re1_crest_route(PeReSession *s, const char *store) {
           strstr(resumed.said, "1 empty slot"));
     CHECK(pe_re_session_use(&resumed, PE_RE1_STAR_CREST) == PE_RE_SAID &&
           !pe_re_has(&resumed.progress, PE_RE1_STAR_CREST) && strstr(resumed.said, "gate is unlocked"));
-    CHECK(re1_route_door(&resumed, store, 0x11b, PE_RE_ROOM) && re1_route_door(&resumed, store, 0x11a, PE_RE_ROOM) &&
-          re1_route_door(&resumed, store, 0x11b, PE_RE_ROOM));
+    if (re1_route_door(&resumed, store, 0x11b, PE_RE_ROOM) && re1_route_door(&resumed, store, 0x11a, PE_RE_ROOM) &&
+        re1_route_door(&resumed, store, 0x11b, PE_RE_ROOM)) {
+        printf("RE1 Jill: all four crests, partial panel reload and courtyard gate\n");
+        re1_guardhouse_route(&resumed, store);
+    } else CHECK(0);
     pe_re_session_end(&resumed);
-    printf("RE1 Jill: all four crests, partial panel reload and courtyard gate\n");
 }
 
 /* Jill's mansion hall exercises the RE1 importer through the portable session. The same

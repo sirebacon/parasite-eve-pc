@@ -26,6 +26,7 @@
 #define PE_RE_SAT_CHECK 0x10u
 #define PE_RE_LOCK_BOLT 254
 #define PE_RE1_INK_RIBBON 0x2F
+#define PE_RE1_SQUARE_CRANK 0x1D
 #define PE_RE1_CHEMICAL 0x26
 #define PE_RE1_WIND_CREST 0x29
 #define PE_RE1_MOON_CREST 0x2C
@@ -51,6 +52,7 @@
 #define PE_RE1_MOON_PLACED 6
 #define PE_RE1_STAR_PLACED 7
 #define PE_RE1_WIND_PLACED 8
+#define PE_RE1_POOL_DRAINED 9
 #define PE_RE2_INK_RIBBON 0x1E                     /* a typewriter save takes one (SCE_AT.C Save_entrance) */
 #define PE_RE_LOCK_OTHER_SIDE 255
 
