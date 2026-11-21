@@ -5,6 +5,7 @@
 #include "pe_re_scd.h"
 #include "pe_imp_rdt.h"
 #include "pe_imp_room.h"
+#include "pe_re_rules.h"
 
 enum {
     OP_NOP = 0x00, OP_EVT_END = 0x01, OP_EVT_NEXT = 0x02, OP_EVT_CHAIN = 0x03, OP_EVT_EXEC = 0x04, OP_EVT_KILL = 0x05,
@@ -378,71 +379,136 @@ static int setup(Vm *vm, const PeImpRoomLogic *l, PeReFlags *flags, const PeReSc
     return 1;
 }
 
-/* RE1 scenario gating. IF/ELSE lengths are relative to their opcode. Use
- * the importer's instruction walker so hidden offsets match stored zone origins.
- * A condition we cannot evaluate leaves both branches available to the preview. */
+/* RE1 length-prefixed SCD procedures. Init and main scripts share the same
+ * placement evaluator. The separate event VM and frame effects are not run here.
+ * Control flow and flag banks follow the RE1 PC decomp's SCD model, checked
+ * against the imported PS1 room scripts. */
+enum {
+    RE1_IF = 1, RE1_ELSE = 2, RE1_ENDIF = 3, RE1_FLAG_CHECK = 4, RE1_FLAG_SET = 5,
+    RE1_DOOR_SET = 0x0c, RE1_ZONE_SET = 0x0d, RE1_ITEM_SET = 0x18,
+    RE1_FLAG_BANKS = 9, RE1_SCENARIO_BANK = 0, RE1_STATUS_BANK = 5, RE1_ITEM_BANK = 7,
+    RE1_LAYOUT_BIT = 0x2e, RE1_BRANCH_DEPTH = 16
+};
+
 typedef struct {
-    const uint8_t *rdt;
-    uint32_t size, proc, spans;
-    struct { uint32_t start, end; } hidden[32];
-    unsigned player;
-    PeReScdRun *run;
-} Re1Branches;
+    uint8_t known[RE1_FLAG_BANKS][32], value[RE1_FLAG_BANKS][32];
+} Re1Flags;
 
-static void re1_branch(void *ctx, uint32_t proc, uint32_t at, const uint8_t *op, uint32_t len) {
-    Re1Branches *b = ctx;
-    if (proc != b->proc) b->proc = proc, b->spans = 0;
-    for (unsigned i = 0; i < b->spans;) {
-        if (at >= b->hidden[i].end) {
-            b->hidden[i] = b->hidden[--b->spans];
-            continue;
-        }
-        if (at < b->hidden[i++].start) continue;
-        if ((op[0] == 0x0c || op[0] == 0x0d || op[0] == 0x18) && b->run->re1_hidden < PE_RE_LIVE_MAX)
-            b->run->live[b->run->re1_hidden++] = at;
-        return;
-    }
-    if (op[0] != 1 || op[1] <= len || op[1] >= b->size - at ||
-        b->spans == sizeof b->hidden / sizeof *b->hidden) return;
-
-    const uint32_t boundary = at + op[1];
-    if (b->rdt[boundary] != 2 && b->rdt[boundary] != 3) return;
-    int known = 0, unknown = 0, failed = 0;
-    for (uint32_t q = at + len; q < boundary;) {
-        const uint8_t *test = b->rdt + q;
-        if ((test[0] < 4 || test[0] > 7) && test[0] != 0x10 && test[0] != 0x11) break;
-        const uint32_t size = pe_imp_scd_size(PE_IMP_RE1, test[0]);
-        if (!size || size > boundary - q) return;
-        if (test[0] == 4 && test[1] == 0 && test[2] == 0 && test[3] <= 1) {
-            known = 1;
-            if (test[3] != (b->player != 0)) failed = 1;
-        } else if (test[0] == 4 && test[1] == 5 && test[2] == 0x2e && test[3] <= 1) {
-            /* Standard preview: 10C places the Armor Key, 118 places Chemical.
-             * Both use this condition to switch to their Arrange placements. */
-            known = 1;
-            if (test[3] != 1) failed = 1;
-        } else {
-            unknown = 1;
-        }
-        q += size;
-    }
-
-    if (failed) {
-        b->hidden[b->spans].start = at + len;
-        b->hidden[b->spans++].end = boundary;
-    } else if (known && !unknown && b->rdt[boundary] == 2 && b->size - boundary >= 2) {
-        const unsigned length = b->rdt[boundary + 1];
-        if (length > 2 && length <= b->size - boundary) {
-            b->hidden[b->spans].start = boundary + 2;
-            b->hidden[b->spans++].end = boundary + length;
-        }
-    }
+static int re1_read_flag(const Re1Flags *state, unsigned bank, unsigned bit) {
+    if (bank >= RE1_FLAG_BANKS) return -1;
+    const unsigned mask = 1u << (bit & 7);
+    if (!(state->known[bank][bit >> 3] & mask)) return -1;
+    return (state->value[bank][bit >> 3] & mask) != 0;
 }
 
-static void re1_scenario_zones(const PeImpRoomLogic *l, PeReScdRun *run) {
-    Re1Branches b = {.player = l->player, .run = run};
-    b.rdt = pe_imp_logic_section(l, PE_IMP_LOGIC_RDT0, NULL, &b.size);
-    if (b.rdt) pe_imp_scd_walk(PE_IMP_RE1, b.rdt, b.size, re1_branch, &b, NULL);
+static void re1_write_flag(Re1Flags *state, unsigned bank, unsigned bit, unsigned value) {
+    if (bank >= RE1_FLAG_BANKS) return;
+    const uint8_t mask = (uint8_t)(1u << (bit & 7));
+    uint8_t *known = &state->known[bank][bit >> 3];
+    uint8_t *byte = &state->value[bank][bit >> 3];
+    *known &= (uint8_t)~mask;
+    if (value > 1) return;
+    *known |= mask;
+    *byte = (uint8_t)((*byte & ~mask) | (value ? mask : 0));
+}
+
+static void re1_merge_flags(Re1Flags *state, const Re1Flags *alternate) {
+    for (unsigned bank = 0; bank < RE1_FLAG_BANKS; bank++)
+        for (unsigned byte = 0; byte < 32; byte++)
+            state->known[bank][byte] &= (uint8_t)(alternate->known[bank][byte] &
+                ~(state->value[bank][byte] ^ alternate->value[bank][byte]));
+}
+
+static int re1_condition(const uint8_t *rdt, uint32_t *at, uint32_t end, const Re1Flags *state) {
+    int result = 1;
+    while (*at < end) {
+        const uint8_t *op = rdt + *at;
+        if ((op[0] < RE1_FLAG_CHECK || op[0] > 7) && op[0] != 0x10 && op[0] != 0x11) break;
+        const unsigned size = pe_imp_scd_size(PE_IMP_RE1, op[0]);
+        if (!size || size > end - *at) return -1;
+        const int value = op[0] == RE1_FLAG_CHECK && op[3] <= 1 ? re1_read_flag(state, op[1], op[2]) : -1;
+        if (value >= 0 && value != op[3]) result = 0;
+        else if (value < 0 && result != 0) result = -1;
+        *at += size;
+    }
+    return result;
+}
+
+static int re1_run_placements(Vm *vm, Re1Flags *state, uint32_t at, uint32_t end, unsigned depth) {
+    if (depth >= RE1_BRANCH_DEPTH) return 0;
+    while (at < end) {
+        if (vm->budget-- <= 0) return 0;
+        const uint8_t *op = vm->rdt + at;
+        const unsigned size = pe_imp_scd_size(PE_IMP_RE1, op[0]);
+        if (!size || size > end - at) break;  /* Same decode boundary as the importer. */
+        vm->run->executed++;
+        switch (op[0]) {
+        case RE1_IF: {
+            if (op[1] <= size || op[1] >= end - at) break;
+            const uint32_t marker = at + op[1];
+            const unsigned kind = vm->rdt[marker];
+            if ((kind != RE1_ELSE && kind != RE1_ENDIF) || end - marker < 2) break;
+            uint32_t next = marker + 2;
+            if (kind == RE1_ELSE) {
+                const unsigned jump = vm->rdt[marker + 1];
+                if (jump < 2 || jump > end - marker) break;
+                next = marker + jump;
+            }
+            uint32_t body = at + size;
+            const int condition = re1_condition(vm->rdt, &body, marker, state);
+            Re1Flags alternate = *state;
+            if (condition != 0 && !re1_run_placements(vm, state, body, marker, depth + 1)) return 0;
+            if (condition == 0 && !re1_run_placements(vm, state, marker + 2, next, depth + 1)) return 0;
+            if (condition < 0) {
+                if (!re1_run_placements(vm, &alternate, marker + 2, next, depth + 1)) return 0;
+                re1_merge_flags(state, &alternate);
+            }
+            at = next;
+            continue;
+        }
+        case RE1_FLAG_SET:
+            re1_write_flag(state, op[1], op[2], op[3]);
+            break;
+        case RE1_DOOR_SET: case RE1_ZONE_SET: case RE1_ITEM_SET:
+            if (vm->run->nlive >= PE_RE_LIVE_MAX) return 0;
+            live(vm, at);
+            break;
+        default:
+            break;
+        }
+        at += size;
+    }
+    return 1;
+}
+
+static void re1_setup_zones(const PeImpRoomLogic *l, const PeReFlags *flags, const PeReScdHost *host, PeReScdRun *run) {
+    Vm vm = {.run = run, .budget = BUDGET_ENTRY};
+    vm.rdt = pe_imp_logic_section(l, PE_IMP_LOGIC_RDT0, NULL, &vm.size);
+    if (!vm.rdt) return;
+    Re1Flags state = {0};
+    re1_write_flag(&state, RE1_SCENARIO_BANK, 0, l->player != 0);
+    re1_write_flag(&state, RE1_STATUS_BANK, RE1_LAYOUT_BIT, !host || !host->re1_alternate_layout);
+    memset(state.known[RE1_ITEM_BANK], 0xff, sizeof state.known[RE1_ITEM_BANK]);
+    if (flags) {
+        memcpy(state.value[RE1_ITEM_BANK], flags->bits[PE_RE_FG_ITEM], sizeof state.value[RE1_ITEM_BANK]);
+        re1_write_flag(&state, RE1_ITEM_BANK, 0, pe_re_flag(flags, PE_RE1_FG_PREVIEW, PE_RE1_PICKUP_ZERO));
+    }
+    for (unsigned script = 0; script < 2; script++) {
+        uint32_t off, len;
+        if (pe_imp_re1_script_section(vm.rdt, vm.size, script, &off, &len)) continue;
+        const uint32_t end = off + len;
+        while (end - off >= 2) {
+            const uint32_t length = le16(vm.rdt + off);
+            if (!length) break;
+            if (length < 2 || length > end - off || !re1_run_placements(&vm, &state, off + 2, off + length, 0)) {
+                run->re1_setup = run->nlive = 0;
+                run->stopped++;
+                return;
+            }
+            run->re1_setup = 1;
+            off += length;
+        }
+    }
 }
 
 void pe_re_scd_run(const PeImpRoomLogic *l, PeReFlags *flags, const PeReScdHost *host, PeReScdRun *out) {
@@ -450,7 +516,7 @@ void pe_re_scd_run(const PeImpRoomLogic *l, PeReFlags *flags, const PeReScdHost 
     memset(out, 0, sizeof *out);
     out->message = -1;
     if (l && l->game == PE_IMP_RE1) {
-        re1_scenario_zones(l, out);
+        re1_setup_zones(l, flags, host, out);
         return;
     }
     if (!setup(&vm, l, flags, host, out, BUDGET_ENTRY)) return;
@@ -487,10 +553,7 @@ int pe_re_scd_running(const PeReScdRun *run, unsigned proc) {
 
 int pe_re_scd_live(const PeReScdRun *r, uint32_t at) {
     if (!at) return 1;
-    if (!r->ran) {
-        for (int i = 0; i < r->re1_hidden; i++) if (r->live[i] == at) return 0;
-        return 1;
-    }                          /* not run, or a store from before ZAT0 */
+    if (!r->ran && !r->re1_setup) return 1;   /* No script data in an older import. */
     for (int i = 0; i < r->nlive; i++) if (r->live[i] == at) return 1;
     return 0;
 }

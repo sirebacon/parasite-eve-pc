@@ -85,7 +85,7 @@ typedef struct {
     int ran;                                   /* 1: the scripts ran (else every record is live) */
     uint32_t live[PE_RE_LIVE_MAX];             /* RDT offsets of zone instructions that ran */
     int nlive;
-    int re1_hidden;                            /* RE1 reuses live[] for inactive offsets; ran stays 0. */
+    int re1_setup;                             /* RE1 evaluated placements; the RE2 scheduler stays off. */
     uint32_t slot[PE_RE_SLOTS];                /* each zone id's instruction (RDT offset), 0 none */
     PeReReset reset[PE_RE_RESETS_MAX];         /* aot_reset, in order */
     int nreset;
@@ -113,10 +113,11 @@ typedef struct {
     void *ctx;
     void (*lose)(void *ctx, uint16_t item, uint16_t count);   /* count 0: all of it */
     void (*give)(void *ctx, uint16_t item, uint16_t count);
+    int re1_alternate_layout;                  /* RE1 room placement input. Zero selects Standard. */
 } PeReScdHost;
 
-/* Enter room `l`: start its init and main tasks and run every task until it yields. RE2 only;
- * another game, or a room without its file, gives ran = 0. */
+/* Enter room `l`: evaluate RE1's placement commands, or start RE2's init/main tasks and run until
+ * they yield. A room without its script file keeps the imported static placements. */
 void pe_re_scd_run(const PeImpRoomLogic *l, PeReFlags *flags, const PeReScdHost *host, PeReScdRun *out);
 /* A frame: every task again, from where it stopped. */
 void pe_re_scd_tick(const PeImpRoomLogic *l, PeReFlags *flags, const PeReScdHost *host, PeReScdRun *run);

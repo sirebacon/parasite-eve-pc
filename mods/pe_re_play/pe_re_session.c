@@ -119,7 +119,13 @@ static int talking(void *ctx) { const PeReSession *s = ctx; return s->talking &&
 static void lose_item(void *ctx, uint16_t item, uint16_t count) { pe_re_lose(&((PeReSession *)ctx)->progress, item, count); }
 static void give_item(void *ctx, uint16_t item, uint16_t count) { pe_re_give(&((PeReSession *)ctx)->progress, item, count); }
 static PeReScdHost host_of(PeReSession *s) {
-    PeReScdHost h = {has_item, talking, s->key, s->key_trg, s, lose_item, give_item};
+    PeReScdHost h = {
+        .has = has_item, .talking = talking, .key = s->key, .key_trg = s->key_trg,
+        .ctx = s, .lose = lose_item, .give = give_item,
+        /* Keep the playable bathroom route until the Standard basement path is supported. */
+        .re1_alternate_layout = s->game == pe_re_game_named("re1") &&
+                                s->stage == PE_RE1_GUARDHOUSE_STAGE && s->room == PE_RE1_DORM_002_BATHROOM
+    };
     return h;
 }
 
@@ -182,6 +188,7 @@ void pe_re_session_place(PeReSession *s, double x, double z, int facing) {
 
 enum { CREST_PASSAGE_ROOM = 0x1A, CREST_GATE_ROOM = 0x1B, CREST_GATE_LOCK = 0x97 };
 enum { COURTYARD_STAGE = 2, POOL_ROOM = 1, WATERFALL_ROOM = 2 };
+enum { DORM_003_ROOM = 0x0A, PLANT_ROOM = 0x0C, BOOKSHELF_DOOR = 2, BOOKSHELF_TRIGGER = 7 };
 
 int pe_re1_is_pool(const PeImpRoomLogic *room) {
     return room && room->game == PE_IMP_RE1 && room->stage == COURTYARD_STAGE && room->room == POOL_ROOM;
@@ -232,6 +239,11 @@ static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *
     if (pe_re1_is_pool(s->logic) &&
         d->stage == PE_RE_STAGE_HERE && d->room == WATERFALL_ROOM && !re1_use_done(s, PE_RE1_POOL_DRAINED)) {
         snprintf(s->said, sizeof s->said, "The pool is full. The crank mechanism might lower the water.");
+        return PE_RE_SAID;
+    }
+    if (s->logic->game == PE_IMP_RE1 && s->stage == PE_RE1_GUARDHOUSE_STAGE && s->room == DORM_003_ROOM &&
+        d->room == PLANT_ROOM && d->zone.id == BOOKSHELF_DOOR && !re1_use_done(s, PE_RE1_RED_BOOK_PLACED)) {
+        snprintf(s->said, sizeof s->said, "The bookshelf blocks the passage.");
         return PE_RE_SAID;
     }
     /* In RE1, key type zero permits passage even when the source door carries a lock ID. */
@@ -322,6 +334,8 @@ static const Re1ItemUse k_re1_item_uses[] = {
      NULL, "The Wind Crest fits into the panel.", 0},
     {COURTYARD_STAGE, POOL_ROOM, 4, 7, PE_RE1_SQUARE_CRANK, PE_RE1_POOL_DRAINED, -1, RE_POSE_REACH,
      "There is a square socket in the pool mechanism.", "The pool drained. The passage across is clear.", 1},
+    {PE_RE1_GUARDHOUSE_STAGE, DORM_003_ROOM, 5, 9, PE_RE1_RED_BOOK, PE_RE1_RED_BOOK_PLACED, -1, RE_POSE_REACH,
+     "One book is missing from the shelf.", "The shelf slid aside, revealing a passage.", 0},
 };
 
 static const Re1ItemUse *re1_item_use(const PeReSession *s, const PeImpTrigger *t) {
@@ -486,8 +500,22 @@ static PeReChange re1_pool_climb(PeReSession *s, double x, double z) {
     return PE_RE_STAY;
 }
 
+/* The room script exposes door 2 at the sliding shelf. Its original DOOR record
+ * is parked at the origin, so use the shelf's examine zone to reach that door. */
+static PeReChange re1_bookshelf_door(PeReSession *s, const char *store, char *why, size_t n) {
+    uint32_t count = 0;
+    pe_imp_logic_section(s->logic, PE_IMP_LOGIC_DOOR, &count, NULL);
+    for (uint32_t i = 0; i < count; i++) {
+        PeImpDoor door;
+        if (!pe_imp_logic_door(s->logic, i, &door) && door.zone.id == BOOKSHELF_DOOR && door.room == PLANT_ROOM &&
+            pe_re_scd_live(&s->run, door.at))
+            return take_door(s, store, &door, why, n);
+    }
+    return PE_RE_STAY;
+}
+
 /* RE1 AOT_SET keeps its activation and message selector in the payload. */
-static PeReChange re1_examine(PeReSession *s, double x, double z) {
+static PeReChange re1_examine(PeReSession *s, const char *store, double x, double z, char *why, size_t n) {
     uint32_t count = 0;
     pe_imp_logic_section(s->logic, PE_IMP_LOGIC_TRIG, &count, NULL);
     double front_x, front_z;
@@ -497,6 +525,9 @@ static PeReChange re1_examine(PeReSession *s, double x, double z) {
         if (pe_imp_logic_trigger(s->logic, i, &trigger) || !pe_re_scd_live(&s->run, trigger.at)) continue;
         if (!pe_re_in_quad(trigger.zone.x, trigger.zone.z, x, z) &&
             !pe_re_in_quad(trigger.zone.x, trigger.zone.z, front_x, front_z)) continue;
+        if (s->stage == PE_RE1_GUARDHOUSE_STAGE && s->room == DORM_003_ROOM &&
+            trigger.zone.id == BOOKSHELF_TRIGGER && trigger.zone.sce == 9)
+            return re1_bookshelf_door(s, store, why, n);
         const Re1ItemUse *use = re1_item_use(s, &trigger);
         if (use) {
             if (use->room == CREST_PASSAGE_ROOM) {
@@ -547,18 +578,21 @@ PeReChange pe_re_session_step(PeReSession *s, const char *store, double x, doubl
         }
         /* else, more forgiving than the game: a door, pickup or message zone she stands in */
         if (pe_re_door_at(s->logic, &s->run, x, z, &d) >= 0) return take_door(s, store, &d, why, n);
+        double front_x = x, front_z = z;
+        if (s->logic->game == PE_IMP_RE1) pe_re_front(x, z, s->facing, &front_x, &front_z);
         int pickup = pe_re_pickup_at(s->logic, &s->run, &s->progress, x, z, &pk);
-        if (pickup < 0 && s->logic->game == PE_IMP_RE1) {
-            double front_x, front_z;
-            pe_re_front(x, z, s->facing, &front_x, &front_z);
+        if (pickup < 0 && s->logic->game == PE_IMP_RE1)
             pickup = pe_re_pickup_at(s->logic, &s->run, &s->progress, front_x, front_z, &pk);
-        }
         if (pickup >= 0) {
             pe_re_take(&s->progress, s->logic, &pk, s->items, s->said, sizeof s->said);
             return PE_RE_SAID;
         }
         if (s->logic->game == PE_IMP_RE1) {
-            const PeReChange change = re1_examine(s, x, z);
+            /* Some thresholds sit inside the static wall. Check the point in
+             * front so those doors can be opened from the walkable side. */
+            if (pe_re_door_at(s->logic, &s->run, front_x, front_z, &d) >= 0)
+                return take_door(s, store, &d, why, n);
+            const PeReChange change = re1_examine(s, store, x, z, why, n);
             if (change != PE_RE_STAY) return change;
         } else {
             const int message = pe_re_message_at(s->logic, &s->run, x, z);

@@ -720,7 +720,7 @@ static void to_zone(uint32_t tag, int kind, const char *what) {
     }
     if (!found) { snprintf(s_status, sizeof s_status, "This room has no %ss.", what); return; }
     int face = 0;
-    if (s_session.logic->game == PE_IMP_RE1 && tag != PE_IMP_LOGIC_DOOR) {
+    if (s_session.logic->game == PE_IMP_RE1 && (tag != PE_IMP_LOGIC_DOOR || re_host()->position_blocked(bx, bz))) {
         front = re1_zone_approach(&selected, &bx, &bz, &face);
     } else if (front) {                                          /* checked in front of her: stand back, facing it */
         double sx, sz;
@@ -787,7 +787,7 @@ static void refresh(void) { s_listed = 0; list_games(); }
 static void text_scripts(char *out, unsigned size) {
     const PeReScdRun *r = &s_session.run;
     if (s_playing && s_session.logic->game == PE_IMP_RE1) {
-        snprintf(out, size, "RE1 scenario filter: %d inactive zone definitions.", r->re1_hidden);
+        snprintf(out, size, "RE1 room setup: %d active zone definitions.", r->nlive);
         return;
     }
     if (!s_playing || !r->ran) { snprintf(out, size, s_playing ? "Not run (every zone counts)." : "-"); return; }

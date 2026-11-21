@@ -44,6 +44,8 @@ typedef void (*PeImpScdVisit)(void *ctx, uint32_t proc, uint32_t at, const uint8
 /* Section `index` (0-22) of an RE2/RE3 RDT: its offset and length (up to the next section).
  * 0 with the range, or -1 if the section is absent or out of range. */
 int pe_imp_rdt_section(const uint8_t *rdt, uint32_t size, unsigned index, uint32_t *offset, uint32_t *length);
+/* The raw RDT range of RE1's init or main room script, by index 0 or 1. */
+int pe_imp_re1_script_section(const uint8_t *rdt, uint32_t size, unsigned script, uint32_t *offset, uint32_t *length);
 /* The bytes of one instruction of `game` (0 for an opcode it doesn't know). */
 uint32_t pe_imp_scd_size(unsigned game, uint8_t opcode);
 /* Walks every procedure of the room's scripts (RE1: init and main, not its event scripts); returns the procedures walked, or -1 for a bad RDT.

@@ -71,6 +71,21 @@ static void re1_check_branches(void) {
     pe_re_scd_run(logic, NULL, NULL, &run);
     CHECK(pe_re_scd_live(&run, 156) && pe_re_scd_live(&run, 176));
     free(logic);
+
+    /* Init sets a local flag. Main checks it before selecting a trigger. */
+    uint8_t setup[208] = {
+        [0x60] = 148, [0x64] = 154,
+        [148] = 6, [150] = 5, [151] = 4, [152] = 12, [153] = 1,
+        [154] = 48, [156] = 1, [157] = 24,
+        [158] = 4, [159] = 4, [160] = 12, [161] = 1,
+        [162] = 0x0d, [180] = 2, [181] = 20, [182] = 0x0d
+    };
+    builder = pe_imp_logic_begin(PE_IMP_RE1, 0, 0, 0);
+    CHECK(builder && !pe_imp_logic_add(builder, PE_IMP_LOGIC_RDT0, 0, setup, sizeof setup));
+    logic = pe_imp_logic_finish(builder);
+    pe_re_scd_run(logic, NULL, NULL, &run);
+    CHECK(run.re1_setup && pe_re_scd_live(&run, 162) && !pe_re_scd_live(&run, 182));
+    free(logic);
 }
 
 /* Steps on the imported door's action zone without changing rooms through the debug API. */
@@ -205,6 +220,72 @@ static int re1_shield_route(PeReSession *s, const char *store) {
     return 1;
 }
 
+static void re1_dormitory_route(PeReSession *s, const char *store) {
+    char why[200] = "";
+    if (!re1_route_door(s, store, 0x401, PE_RE_ROOM)) { CHECK(0); return; }
+    CHECK(pe_re_session_step(s, store, 10000, 13400, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_RED_BOOK));
+    static const unsigned to_hall[] = {0x400, 0x405};
+    if (!re1_route_walk(s, store, to_hall, sizeof to_hall / sizeof *to_hall)) { CHECK(0); return; }
+    pe_re_session_place(s, 24540, 21050, 3072);
+    CHECK(pe_re_session_step(s, store, s->x, s->z, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "Dorm Key (002)"));
+    if (!re1_route_door(s, store, 0x408, PE_RE_ROOM)) { CHECK(0); return; }
+    CHECK(re1_route_door(s, store, 0x40a, PE_RE_SAID) && strstr(s->said, "Dorm Key (003)"));
+    CHECK(pe_re_session_step(s, store, 16000, 22200, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_DORM_KEY_002));
+    if (!re1_route_door(s, store, 0x405, PE_RE_ROOM) || !re1_route_door(s, store, 0x406, PE_RE_ROOM)) {
+        CHECK(0);
+        return;
+    }
+    CHECK(strstr(s->said, "Used the Dorm Key (002)"));
+    if (!re1_route_door(s, store, 0x407, PE_RE_ROOM)) { CHECK(0); return; }
+    PeImpPickup pickup;
+    PeReScdRun standard;
+    pe_re_scd_run(s->logic, &s->progress.flags, NULL, &standard);
+    CHECK(standard.re1_setup && pe_re_pickup_at(s->logic, &standard, &s->progress, 7500, 6350, &pickup) >= 0 &&
+          pickup.item == 0x0b);
+    PeImpRoomLogic *basement = NULL;
+    if (!pe_imp_catalog_roomlogic(store, "re1:logic/410-0", &basement, why, sizeof why)) {
+        pe_re_scd_run(basement, &s->progress.flags, NULL, &standard);
+        CHECK(standard.re1_setup && pe_re_pickup_at(basement, &standard, &s->progress, 4450, 6820, &pickup) >= 0 &&
+              pickup.item == PE_RE1_DORM_KEY_003);
+        free(basement);
+    } else CHECK(0);
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 7500, 6350, &pickup) >= 0 &&
+          pickup.item == PE_RE1_DORM_KEY_003);
+    CHECK(pe_re_session_step(s, store, 7500, 6350, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&s->progress, PE_RE1_DORM_KEY_003));
+    CHECK(pe_re_pickup_at(s->logic, &s->run, &s->progress, 7500, 6350, NULL) < 0);
+
+    static const unsigned to_dorm_003[] = {0x406, 0x405, 0x408, 0x40a};
+    if (!re1_route_walk(s, store, to_dorm_003, sizeof to_dorm_003 / sizeof *to_dorm_003)) { CHECK(0); return; }
+    CHECK(strstr(s->said, "Used the Dorm Key (003)"));
+    CHECK(pe_re_session_step(s, store, 15100, 5100, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "blocks the passage"));
+    CHECK(pe_re_session_use(s, PE_RE1_RED_BOOK) == PE_RE_SAID && pe_re_has(&s->progress, PE_RE1_RED_BOOK));
+    CHECK(pe_re_session_step(s, store, 11850, 10450, 1, why, sizeof why) == PE_RE_SAID &&
+          strstr(s->said, "missing from the shelf"));
+    CHECK(pe_re_session_use(s, PE_RE1_RED_BOOK) == PE_RE_SAID && s->use_pose == RE_POSE_REACH &&
+          !pe_re_has(&s->progress, PE_RE1_RED_BOOK) && strstr(s->said, "revealing a passage"));
+
+    uint8_t bytes[PE_RE_SAVE_SIZE];
+    PeReSaved saved;
+    PeReSession resumed;
+    pe_re_save_encode(s, 1, bytes);
+    if (pe_re_save_decode(bytes, &saved) || pe_re_session_resume(&resumed, store, &saved, why, sizeof why)) {
+        CHECK(0);
+        return;
+    }
+    CHECK(!pe_re_has(&resumed.progress, PE_RE1_RED_BOOK));
+    CHECK(pe_re_session_step(&resumed, store, 15100, 5100, 1, why, sizeof why) == PE_RE_ROOM &&
+          resumed.stage == 3 && resumed.room == 0x0c && resumed.x == 2800 && resumed.z == 13600);
+    CHECK(re1_route_door(&resumed, store, 0x408, PE_RE_ROOM) &&
+          re1_route_door(&resumed, store, 0x40a, PE_RE_ROOM) && !resumed.said[0]);
+    pe_re_session_end(&resumed);
+    printf("RE1 Jill: Dorm 002 and 003 keys, Red Book, shelf passage and save reload\n");
+}
+
 static void re1_guardhouse_route(PeReSession *s, const char *store) {
     char why[200] = "";
     CHECK(pe_re_session_step(s, store, 5650, 2000, 1, why, sizeof why) == PE_RE_SAID &&
@@ -251,9 +332,11 @@ static void re1_guardhouse_route(PeReSession *s, const char *store) {
     CHECK(pe_re_session_step(&resumed, store, x, z, 1, why, sizeof why) == PE_RE_CLIMB &&
           resumed.floor == 0 && resumed.camera == 5);
     static const unsigned to_guardhouse[] = {0x302, 0x304, 0x400};
-    CHECK(re1_route_walk(&resumed, store, to_guardhouse, sizeof to_guardhouse / sizeof *to_guardhouse));
+    if (re1_route_walk(&resumed, store, to_guardhouse, sizeof to_guardhouse / sizeof *to_guardhouse)) {
+        printf("RE1 Jill: Square Crank, ladder crossing, pool-floor reload and Guardhouse entry\n");
+        re1_dormitory_route(&resumed, store);
+    } else CHECK(0);
     pe_re_session_end(&resumed);
-    printf("RE1 Jill: Square Crank, ladder crossing, pool-floor reload and Guardhouse entry\n");
 }
 
 static void re1_crest_route(PeReSession *s, const char *store) {

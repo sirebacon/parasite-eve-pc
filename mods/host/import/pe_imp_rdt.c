@@ -81,12 +81,16 @@ int pe_imp_rdt_section(const uint8_t *rdt, uint32_t size, unsigned index, uint32
     return section(PE_IMP_RE2, rdt, size, index, offset, length);
 }
 
+int pe_imp_re1_script_section(const uint8_t *rdt, uint32_t size, unsigned script, uint32_t *offset, uint32_t *length) {
+    return script > 1 ? -1 : section(PE_IMP_RE1, rdt, size, 6 + script, offset, length);
+}
+
 /* RE1's chain of length-prefixed procedures */
 static int walk_re1(const uint8_t *rdt, uint32_t size, PeImpScdVisit visit, void *ctx, uint32_t *bad) {
     uint32_t proc = 0;
-    for (unsigned s = 6; s <= 7; s++) {
+    for (unsigned s = 0; s < 2; s++) {
         uint32_t off, len;
-        if (section(PE_IMP_RE1, rdt, size, s, &off, &len)) continue;
+        if (pe_imp_re1_script_section(rdt, size, s, &off, &len)) continue;
         uint32_t p = off, stop = off + len;
         while (p + 2 <= stop) {
             uint32_t n = le16(rdt + p);

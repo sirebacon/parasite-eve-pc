@@ -38,6 +38,11 @@
 #define PE_RE1_MUSIC_NOTES 0x23
 #define PE_RE1_SWORD_KEY 0x33
 #define PE_RE1_SHIELD_KEY 0x35
+#define PE_RE1_DORM_KEY_002 0x39
+#define PE_RE1_DORM_KEY_003 0x3A
+#define PE_RE1_RED_BOOK 0x3E
+#define PE_RE1_GUARDHOUSE_STAGE 3
+#define PE_RE1_DORM_002_BATHROOM 0x07
 #define PE_RE1_DINING_ROOM 0x05
 #define PE_RE1_TERRARIUM_ROOM 0x0C
 #define PE_RE1_PIANO_ROOM 0x0F
@@ -53,6 +58,7 @@
 #define PE_RE1_STAR_PLACED 7
 #define PE_RE1_WIND_PLACED 8
 #define PE_RE1_POOL_DRAINED 9
+#define PE_RE1_RED_BOOK_PLACED 10
 #define PE_RE2_INK_RIBBON 0x1E                     /* a typewriter save takes one (SCE_AT.C Save_entrance) */
 #define PE_RE_LOCK_OTHER_SIDE 255
 
