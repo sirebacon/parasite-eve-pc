@@ -557,3 +557,73 @@ int pe_re_scd_live(const PeReScdRun *r, uint32_t at) {
     for (int i = 0; i < r->nlive; i++) if (r->live[i] == at) return 1;
     return 0;
 }
+
+static uint32_t re1_event_offset(const uint8_t *p) {
+    return le16(p) | (uint32_t)le16(p + 2) << 16;
+}
+
+static int re1_event_commands(const uint8_t *cmd, unsigned size, PeRe1EventPlan *plan) {
+    int conditional = 0;
+    const unsigned first_cut = plan->count;
+    for (unsigned at = 0; at < size;) {
+        const unsigned opcode = cmd[at];
+        const unsigned width = pe_imp_scd_size(PE_IMP_RE1, (uint8_t)opcode);
+        if (!width || width > size - at) return 0;
+        if (opcode == RE1_IF || opcode == RE1_ELSE) conditional = 1;
+        if (opcode == 9) {                           /* CUT_SET */
+            if (plan->count >= PE_RE1_EVENT_CUTS) return 0;
+            plan->cuts[plan->count].tick = plan->duration;
+            plan->cuts[plan->count++].camera = cmd[at + 1];
+        }
+        at += width;
+    }
+    return !conditional || plan->count == first_cut;
+}
+
+int pe_re1_event_plan(const PeImpRoomLogic *room, unsigned event, PeRe1EventPlan *plan) {
+    *plan = (PeRe1EventPlan){0};
+    if (!room || room->game != PE_IMP_RE1) return 0;
+    uint32_t size = 0;
+    const uint8_t *events = pe_imp_logic_section(room, PE_IMP_LOGIC_SCD2, NULL, &size);
+    if (!events || size < 4) return 0;
+    const uint32_t table = re1_event_offset(events);
+    if (table < 4 || table & 3 || table > size || event >= table / 4) return 0;
+    uint32_t at = re1_event_offset(events + event * 4);
+    const uint32_t end = event + 1 < table / 4 ? re1_event_offset(events + (event + 1) * 4) : size;
+    if (at < table || at >= end || end > size) return 0;
+    PeRe1EventPlan result = {0};
+    while (end - at >= 2) {
+        const uint8_t *op = events + at;
+        uint32_t width;
+        switch (op[0]) {
+        case 0x06:                        /* length-prefixed sequence of room commands */
+            width = (uint32_t)op[1] + 1;
+            if (width < 4 || width > end - at || le16(op + 2) != width - 4 ||
+                !re1_event_commands(op + 4, width - 4, &result)) return 0;
+            break;
+        case 0x07:                        /* inline room command */
+            width = op[1];
+            if (width < 4 || width > end - at) return 0;
+            /* The US Dual Shock event inserts these extra inline commands.
+             * Their event widths differ from the base room command table. */
+            if ((op[2] == 0x50 && width == 8) || (op[2] == 0x51 && width == 10)) break;
+            if (pe_imp_scd_size(PE_IMP_RE1, op[2]) != width - 2 ||
+                !re1_event_commands(op + 2, width - 2, &result)) return 0;
+            break;
+        case 0xf8:                        /* padded wait, in event ticks */
+            width = 4;
+            if (width > end - at || op[1] != 0xf9) return 0;
+            result.duration += le16(op + 2);
+            if (result.duration > 3600) return 0;
+            break;
+        case 0xff:
+            if (op[1]) return 0;
+            *plan = result;
+            return 1;
+        default:
+            return 0;
+        }
+        at += width;
+    }
+    return 0;
+}

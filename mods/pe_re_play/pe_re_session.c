@@ -418,34 +418,47 @@ int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel) {
 
 typedef struct {
     const uint8_t *rdt;
-    ReHostRoomProp closed, open;
-} Re1ClockPlacements;
+    const char *asset;
+    uint8_t object, type, bank, flag;
+    ReHostRoomProp clear, set;
+} Re1SlidingProp;
 
-static void read_dining_clock(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
+static void read_sliding_prop(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
     (void)proc;
-    Re1ClockPlacements *clock = ctx;
-    if (size != 28 || ins[0] != 0x1f || ins[1] != 2 || ins[2] != 1 || at < 4) return;
-    /* OM_SET object 2 follows the check for puzzle flag 1:AB, or its ELSE. */
-    static const uint8_t closed_check[] = {0x04, 0x01, 0xab, 0x00};
-    static const uint8_t open_else[] = {0x02, 0x1e};
-    if (!memcmp(clock->rdt + at - sizeof closed_check, closed_check, sizeof closed_check))
-        read_room_prop(&clock->closed, ins, "re1:object/105-2");
-    else if (clock->closed.asset_id[0] &&
-             !memcmp(clock->rdt + at - sizeof open_else, open_else, sizeof open_else))
-        read_room_prop(&clock->open, ins, "re1:object/105-2");
+    Re1SlidingProp *prop = ctx;
+    if (size != 28 || ins[0] != 0x1f || ins[1] != prop->object || ins[2] != prop->type || at < 4) return;
+    const uint8_t clear_check[] = {0x04, prop->bank, prop->flag, 0x00};
+    static const uint8_t set_else[] = {0x02, 0x1e};
+    if (!memcmp(prop->rdt + at - sizeof clear_check, clear_check, sizeof clear_check))
+        read_room_prop(&prop->clear, ins, prop->asset);
+    else if (prop->clear.asset_id[0] && !memcmp(prop->rdt + at - sizeof set_else, set_else, sizeof set_else))
+        read_room_prop(&prop->set, ins, prop->asset);
+}
+
+static int sliding_prop(const PeImpRoomLogic *room, Re1SlidingProp *prop, ReHostRoomProp *clear, ReHostRoomProp *set) {
+    uint32_t bytes = 0;
+    prop->rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &bytes);
+    if (!prop->rdt) return 0;
+    pe_imp_scd_walk(PE_IMP_RE1, prop->rdt, bytes, read_sliding_prop, prop, NULL);
+    if (!prop->clear.asset_id[0] || !prop->set.asset_id[0]) return 0;
+    *clear = prop->clear;
+    *set = prop->set;
+    return 1;
 }
 
 int pe_re1_dining_clock(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHostRoomProp *open) {
     if (!room || room->game != PE_IMP_RE1 || room->stage != 0 || room->room != PE_RE1_DINING_ROOM ||
         room->player != 1) return 0;
-    uint32_t bytes = 0;
-    Re1ClockPlacements clock = {.rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &bytes)};
-    if (!clock.rdt) return 0;
-    pe_imp_scd_walk(PE_IMP_RE1, clock.rdt, bytes, read_dining_clock, &clock, NULL);
-    if (!clock.closed.asset_id[0] || !clock.open.asset_id[0]) return 0;
-    *closed = clock.closed;
-    *open = clock.open;
-    return 1;
+    Re1SlidingProp clock = {.asset = "re1:object/105-2", .object = 2, .type = 1, .bank = 1, .flag = 0xab};
+    return sliding_prop(room, &clock, closed, open);
+}
+
+int pe_re1_bookshelf(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHostRoomProp *open) {
+    if (!room || room->game != PE_IMP_RE1 || room->stage != PE_RE1_GUARDHOUSE_STAGE || room->room != DORM_003_ROOM)
+        return 0;
+    Re1SlidingProp shelf = {.asset = "re1:object/40a-0", .object = 0, .type = 0x31, .bank = 0, .flag = 0x25};
+    /* The Red Book sequence clears flag 0:25 when it moves the shelf off the door. */
+    return sliding_prop(room, &shelf, open, closed);
 }
 
 static void read_pool_water(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {

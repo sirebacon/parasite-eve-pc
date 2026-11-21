@@ -133,4 +133,14 @@ uint32_t pe_re_scd_keys(uint16_t pad);
 /* Is a task running main-script procedure `proc`? */
 int pe_re_scd_running(const PeReScdRun *run, unsigned proc);
 
+enum { PE_RE1_EVENT_CUTS = 8 };
+typedef struct {
+    struct { unsigned tick; uint8_t camera; } cuts[PE_RE1_EVENT_CUTS];
+    unsigned count, duration;
+} PeRe1EventPlan;
+
+/* Read the camera cuts and waits from a linear RE1 event. Returns 0 when the
+ * event uses a control-flow form this playback code cannot interpret yet. */
+int pe_re1_event_plan(const PeImpRoomLogic *room, unsigned event, PeRe1EventPlan *plan);
+
 #endif

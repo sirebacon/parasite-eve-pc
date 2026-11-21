@@ -115,7 +115,22 @@ def test_puzzles(game):
             drained = (game.work / "pool-drained.ppm").read_bytes()
             changed = sum(a != b for a, b in zip(full, drained))
             check(1000 < changed < len(full) // 2, f"The pool view changed {changed} color bytes")
-        for _ in range(12):
+        if item == "Red Book":
+            for _ in range(16):
+                if "bookshelf camera: 5" in log()[len(initial_log):]:
+                    break
+                game.adv(2)
+            check("bookshelf camera: 5" in log()[len(initial_log):], "Bookshelf camera did not load")
+            game.adv(4)
+            game.raw("capture bookshelf-start")
+            game.adv(30)
+            check("bookshelf camera: 2" not in log()[len(initial_log):], "Bookshelf camera changed before capture")
+            game.raw("capture bookshelf-sliding")
+            start = (game.work / "bookshelf-start.ppm").read_bytes()
+            sliding = (game.work / "bookshelf-sliding.ppm").read_bytes()
+            changed = sum(a != b for a, b in zip(start, sliding))
+            check(1000 < changed < len(start) // 4, f"The bookshelf view changed {changed} color bytes")
+        for _ in range(24):
             game.adv(16)
             if log().count("puzzle gesture: finished") > ends:
                 break
@@ -124,6 +139,10 @@ def test_puzzles(game):
             shots = [line.removeprefix(camera_prefix) for line in log()[len(initial_log):].splitlines()
                      if line.startswith(camera_prefix)]
             check(shots == ["6", "1", "7", "1"], f"Piano event camera sequence: {shots}")
+        if item == "Red Book":
+            shots = [line.rsplit(" ", 1)[-1] for line in log()[len(initial_log):].splitlines()
+                     if "bookshelf camera: " in line]
+            check(shots == ["5", "2", "3"], f"Bookshelf event camera sequence: {shots}")
         actual = state()
         check((item in actual["Pocket"]) == retained, actual)
         game.adv(20)
@@ -168,6 +187,12 @@ def test_puzzles(game):
             game.adv(8)
         actual = state()
         check("pool ladder: finished" in log()[start:] and f"floor {floor}" in actual["Status"], actual)
+
+    jump(1, stage=4)
+    pickup("Red Book")
+    jump(0x0A, stage=4)
+    check("room prop: loaded re1:object/40a-0" in log(), "Imported bookshelf did not load")
+    use("Red Book", state()["Pocket"].split(", ").index("Red Book"), "reach")
 
 
 def main():

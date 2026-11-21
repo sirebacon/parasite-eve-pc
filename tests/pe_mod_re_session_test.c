@@ -261,6 +261,14 @@ static void re1_dormitory_route(PeReSession *s, const char *store) {
     static const unsigned to_dorm_003[] = {0x406, 0x405, 0x408, 0x40a};
     if (!re1_route_walk(s, store, to_dorm_003, sizeof to_dorm_003 / sizeof *to_dorm_003)) { CHECK(0); return; }
     CHECK(strstr(s->said, "Used the Dorm Key (003)"));
+    PeRe1EventPlan shelf_event;
+    CHECK(pe_re1_event_plan(s->logic, 1, &shelf_event) && shelf_event.count == 3 && shelf_event.duration == 130);
+    CHECK(shelf_event.cuts[0].tick == 10 && shelf_event.cuts[0].camera == 5 &&
+          shelf_event.cuts[1].tick == 70 && shelf_event.cuts[1].camera == 2 &&
+          shelf_event.cuts[2].tick == 130 && shelf_event.cuts[2].camera == 3);
+    ReHostRoomProp shelf_closed = {0}, shelf_open = {0};
+    CHECK(pe_re1_bookshelf(s->logic, &shelf_closed, &shelf_open) &&
+          shelf_closed.z == 5250 && shelf_open.z == 3090 && !strcmp(shelf_open.asset_id, "re1:object/40a-0"));
     CHECK(pe_re_session_step(s, store, 15100, 5100, 1, why, sizeof why) == PE_RE_SAID &&
           strstr(s->said, "blocks the passage"));
     CHECK(pe_re_session_use(s, PE_RE1_RED_BOOK) == PE_RE_SAID && pe_re_has(&s->progress, PE_RE1_RED_BOOK));

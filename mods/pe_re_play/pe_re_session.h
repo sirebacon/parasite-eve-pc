@@ -136,6 +136,8 @@ int pe_re1_piano_cuts(const PeImpRoomLogic *room, uint8_t cameras[PE_RE1_PIANO_C
 int pe_re1_piano_panel(const PeImpRoomLogic *room, ReHostRoomProp *panel);
 /* Jill's Dining Room clock at the two positions from its OM_SET branches. */
 int pe_re1_dining_clock(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHostRoomProp *open);
+/* Dormitory 003 bookshelf in the two positions recorded by its room script. */
+int pe_re1_bookshelf(const PeImpRoomLogic *room, ReHostRoomProp *closed, ReHostRoomProp *open);
 /* The courtyard pool's main water surface at its imported OM_SET placement. */
 int pe_re1_pool_water(const PeImpRoomLogic *room, ReHostRoomProp *surface);
 /* A frame of the room's scripts. PE_RE_SAID when one put up a message (`said`), PE_RE_ZONE when one

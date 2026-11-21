@@ -54,6 +54,9 @@ static int s_gesture_cuts;
 static ReHostRoomProp s_piano_panel;
 static ReHostRoomProp s_clock_closed, s_clock_open;
 static ReHostRoomProp s_pool_water;
+static ReHostRoomProp s_shelf_closed, s_shelf_open;
+static PeRe1EventPlan s_shelf_event;
+static int s_shelf_gesture;
 static int s_clock_gesture, s_pool_gesture, s_prop_cut;
 
 enum { PANEL_LIFT = 5400, PANEL_RISE_START = 35, PANEL_RISE_END = 51 };
@@ -89,6 +92,7 @@ static void set_pool_water(unsigned frame) {
 
 static void show_room_prop(void) {
     s_piano_panel.asset_id[0] = s_clock_closed.asset_id[0] = s_pool_water.asset_id[0] = 0;
+    s_shelf_closed.asset_id[0] = 0;
     if (pe_re1_piano_panel(s_session.logic, &s_piano_panel)) {
         const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_PIANO_PLAYED);
         set_piano_panel(open ? PANEL_RISE_END : 0);
@@ -98,6 +102,9 @@ static void show_room_prop(void) {
     } else if (pe_re1_pool_water(s_session.logic, &s_pool_water)) {
         const int drained = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_POOL_DRAINED);
         set_pool_water(drained ? POOL_DRAIN_END : 0);
+    } else if (pe_re1_bookshelf(s_session.logic, &s_shelf_closed, &s_shelf_open)) {
+        const int open = pe_re_flag(&s_session.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_RED_BOOK_PLACED);
+        set_room_prop(open ? &s_shelf_open : &s_shelf_closed);
     } else {
         set_room_prop(NULL);
     }
@@ -138,10 +145,31 @@ static int show_gesture_camera(int camera) {
     return 1;
 }
 
+static void animate_bookshelf(unsigned frame) {
+    for (unsigned i = 0; i < s_shelf_event.count; i++) {
+        if (frame != s_shelf_event.cuts[i].tick) continue;
+        const unsigned camera = s_shelf_event.cuts[i].camera;
+        if (show_gesture_camera((int)camera)) {
+            s_prop_cut = 1;
+            pe_mod_log(MOD_ID, "bookshelf camera: %u", camera);
+        }
+    }
+    const unsigned start = s_shelf_event.cuts[0].tick, end = s_shelf_event.cuts[1].tick;
+    if (frame <= start || frame > end) return;
+    ReHostRoomProp shelf = s_shelf_closed;
+    const double fraction = (double)(frame - start) / (end - start);
+    shelf.x += (int)((s_shelf_open.x - shelf.x) * fraction);
+    shelf.y += (int)((s_shelf_open.y - shelf.y) * fraction);
+    shelf.z += (int)((s_shelf_open.z - shelf.z) * fraction);
+    set_room_prop(&shelf);
+}
+
 static void cancel_gesture(void) {
     if (!s_gesture_frames) return;
     s_gesture_frames = 0;
     s_gesture_cuts = 0;
+    if (s_shelf_gesture) set_room_prop(&s_shelf_open);
+    s_shelf_gesture = 0;
     s_clock_gesture = s_pool_gesture = s_prop_cut = 0;
     re_host()->player_gesture(RE_POSE_IDLE, 0, 0);
     re_host()->room_fade(128, 0, 0);
@@ -166,9 +194,11 @@ static void present_item_use(uint16_t item) {
     }
     const int moves_clock = item == PE_RE1_GOLD_EMBLEM && s_clock_closed.asset_id[0];
     const int drains_pool = item == PE_RE1_SQUARE_CRANK && s_pool_water.asset_id[0];
+    const int opens_shelf = item == PE_RE1_RED_BOOK && s_shelf_closed.asset_id[0];
     if (host->struct_size < sizeof *host || !host->player_gesture) {
         if (moves_clock) set_room_prop(&s_clock_open);
         if (drains_pool) set_room_prop(NULL);
+        if (opens_shelf) set_room_prop(&s_shelf_open);
         say(s_session.said);
         return;
     }
@@ -176,13 +206,21 @@ static void present_item_use(uint16_t item) {
     s_gesture_frame = 0;
     s_clock_gesture = moves_clock;
     s_pool_gesture = drains_pool;
+    s_shelf_gesture = opens_shelf;
+    s_shelf_event = (PeRe1EventPlan){0};
     s_gesture_frames = s_gesture_pose == RE_POSE_PIANO ? 52 : 22;
     if (s_clock_gesture) s_gesture_frames = CLOCK_GESTURE_END;
     if (s_pool_gesture) s_gesture_frames = POOL_GESTURE_END;
+    if (s_shelf_gesture && pe_re1_event_plan(s_session.logic, 1, &s_shelf_event) &&
+        s_shelf_event.count >= 2 && s_shelf_event.cuts[0].tick < s_shelf_event.cuts[1].tick)
+        s_gesture_frames = s_shelf_event.duration + 10;
+    else
+        s_shelf_event.count = 0;
     s_gesture_cuts = s_gesture_pose == RE_POSE_PIANO && pe_re1_piano_cuts(s_session.logic, s_gesture_cameras);
     if (s_gesture_pose == RE_POSE_PIANO) set_piano_panel(0);
     host->room_fade(128, 0, 1);
     host->player_gesture(s_gesture_pose, 0, s_gesture_frames);
+    if (s_shelf_event.count) animate_bookshelf(0);
     pe_mod_log(MOD_ID, "puzzle gesture: %s", s_gesture_pose == RE_POSE_PIANO ? "piano" : "reach");
 }
 
@@ -588,6 +626,7 @@ static int on_frame(void *ctx, void *user) {
             }
             if (s_pool_gesture && s_gesture_frame > POOL_DRAIN_START && s_gesture_frame <= POOL_DRAIN_END)
                 set_pool_water(s_gesture_frame);
+            if (s_shelf_gesture && s_shelf_event.count) animate_bookshelf(s_gesture_frame);
             re_host()->player_gesture(s_gesture_pose, s_gesture_frame, s_gesture_frames);
         }
         if (s_enabled) pe_re_save_encode(&s_session, 1, s_saved);
