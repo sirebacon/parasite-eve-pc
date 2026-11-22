@@ -389,6 +389,24 @@ static int play_gesture(void) {
     EXPECT(s.hold && s.gesture == RE_POSE_CLIMB && s.floor == 0 && s.camera == 5);
     frames(35, 0);
     EXPECT(!s.hold && !s.busy && s.floor == 0 && s.gesture == RE_POSE_IDLE);
+
+    *s.stage = PE_RE1_GUARDHOUSE_STAGE + 1;
+    *s.room_number = PE_RE1_PLANT_ROOM;
+    s.jump();
+    frames(1, 0);
+    PeReRoomEvent plant_room;
+    EXPECT(!s.api->room(&plant_room) && !strcmp(plant_room.game, "re1") && plant_room.count == 1 &&
+           plant_room.enemies[0].kind == PE_RE1_PLANT_KIND && plant_room.enemies[0].killed_flag == PE_RE1_PLANT_DEFEAT);
+    EXPECT(s.api->pause_for_battle() == 1 && !s.active && s.api->room(&plant_room));
+    EXPECT(s.api->defeated(0xff) < 0 && !s.api->defeated(PE_RE1_PLANT_DEFEAT));
+    EXPECT(!pe_re_save_decode(s.progress->data, &saved) &&
+           pe_re_flag(&saved.progress.flags, PE_RE_FG_ENEMY, PE_RE1_PLANT_DEFEAT));
+    s.api->resume_after_battle();
+    frames(2, 0);
+    EXPECT(!s.api->room(&plant_room) && !plant_room.count);
+    s.save_read(NULL, NULL);
+    frames(1, 0);
+    EXPECT(!s.api->room(&plant_room) && !plant_room.count);
     return 0;
 }
 

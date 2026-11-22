@@ -385,8 +385,8 @@ static int setup(Vm *vm, const PeImpRoomLogic *l, PeReFlags *flags, const PeReSc
  * against the imported PS1 room scripts. */
 enum {
     RE1_IF = 1, RE1_ELSE = 2, RE1_ENDIF = 3, RE1_FLAG_CHECK = 4, RE1_FLAG_SET = 5,
-    RE1_DOOR_SET = 0x0c, RE1_ZONE_SET = 0x0d, RE1_ITEM_SET = 0x18,
-    RE1_FLAG_BANKS = 9, RE1_SCENARIO_BANK = 0, RE1_STATUS_BANK = 5, RE1_ITEM_BANK = 7,
+    RE1_DOOR_SET = 0x0c, RE1_ZONE_SET = 0x0d, RE1_ITEM_SET = 0x18, RE1_ENEMY_SET = 0x1b,
+    RE1_FLAG_BANKS = 9, RE1_SCENARIO_BANK = 0, RE1_ENEMY_BANK = 3, RE1_STATUS_BANK = 5, RE1_ITEM_BANK = 7,
     RE1_LAYOUT_BIT = 0x2e, RE1_BRANCH_DEPTH = 16
 };
 
@@ -434,7 +434,8 @@ static int re1_condition(const uint8_t *rdt, uint32_t *at, uint32_t end, const R
     return result;
 }
 
-static int re1_run_placements(Vm *vm, Re1Flags *state, uint32_t at, uint32_t end, unsigned depth) {
+static int re1_run_placements(Vm *vm, Re1Flags *state, uint32_t at, uint32_t end, unsigned depth,
+                              int plant_room) {
     if (depth >= RE1_BRANCH_DEPTH) return 0;
     while (at < end) {
         if (vm->budget-- <= 0) return 0;
@@ -457,10 +458,10 @@ static int re1_run_placements(Vm *vm, Re1Flags *state, uint32_t at, uint32_t end
             uint32_t body = at + size;
             const int condition = re1_condition(vm->rdt, &body, marker, state);
             Re1Flags alternate = *state;
-            if (condition != 0 && !re1_run_placements(vm, state, body, marker, depth + 1)) return 0;
-            if (condition == 0 && !re1_run_placements(vm, state, marker + 2, next, depth + 1)) return 0;
+            if (condition != 0 && !re1_run_placements(vm, state, body, marker, depth + 1, plant_room)) return 0;
+            if (condition == 0 && !re1_run_placements(vm, state, marker + 2, next, depth + 1, plant_room)) return 0;
             if (condition < 0) {
-                if (!re1_run_placements(vm, &alternate, marker + 2, next, depth + 1)) return 0;
+                if (!re1_run_placements(vm, &alternate, marker + 2, next, depth + 1, plant_room)) return 0;
                 re1_merge_flags(state, &alternate);
             }
             at = next;
@@ -472,6 +473,14 @@ static int re1_run_placements(Vm *vm, Re1Flags *state, uint32_t at, uint32_t end
         case RE1_DOOR_SET: case RE1_ZONE_SET: case RE1_ITEM_SET:
             if (vm->run->nlive >= PE_RE_LIVE_MAX) return 0;
             live(vm, at);
+            break;
+        case RE1_ENEMY_SET:
+            /* The Plant Room's body, branches and inactive prop share kind 8.
+             * The combat body carries flag 0x60 in slot 0. Either entrance
+             * variant can be selected when an event flag is still unknown. */
+            if (plant_room && !vm->run->nenemy && op[1] == PE_RE1_PLANT_KIND &&
+                op[3] == PE_RE1_PLANT_DEFEAT && op[18] == 0)
+                vm->run->enemy[vm->run->nenemy++] = at;
             break;
         default:
             break;
@@ -493,6 +502,13 @@ static void re1_setup_zones(const PeImpRoomLogic *l, const PeReFlags *flags, con
         memcpy(state.value[RE1_ITEM_BANK], flags->bits[PE_RE_FG_ITEM], sizeof state.value[RE1_ITEM_BANK]);
         re1_write_flag(&state, RE1_ITEM_BANK, 0, pe_re_flag(flags, PE_RE1_FG_PREVIEW, PE_RE1_PICKUP_ZERO));
     }
+    const int plant_room = l->stage == PE_RE1_GUARDHOUSE_STAGE && l->room == PE_RE1_PLANT_ROOM;
+    if (plant_room) {
+        /* Room 4-0C tests this source bit for 1 when Plant 42 is alive. The
+         * encounter service stores the opposite, a set bit for defeat. */
+        re1_write_flag(&state, RE1_ENEMY_BANK, PE_RE1_PLANT_DEFEAT,
+                       !flags || !pe_re_flag(flags, PE_RE_FG_ENEMY, PE_RE1_PLANT_DEFEAT));
+    }
     for (unsigned script = 0; script < 2; script++) {
         uint32_t off, len;
         if (pe_imp_re1_script_section(vm.rdt, vm.size, script, &off, &len)) continue;
@@ -500,8 +516,8 @@ static void re1_setup_zones(const PeImpRoomLogic *l, const PeReFlags *flags, con
         while (end - off >= 2) {
             const uint32_t length = le16(vm.rdt + off);
             if (!length) break;
-            if (length < 2 || length > end - off || !re1_run_placements(&vm, &state, off + 2, off + length, 0)) {
-                run->re1_setup = run->nlive = 0;
+            if (length < 2 || length > end - off || !re1_run_placements(&vm, &state, off + 2, off + length, 0, plant_room)) {
+                run->re1_setup = run->nlive = run->nenemy = 0;
                 run->stopped++;
                 return;
             }

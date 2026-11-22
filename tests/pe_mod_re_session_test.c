@@ -319,10 +319,27 @@ static void re1_dormitory_route(PeReSession *s, const char *store) {
     CHECK(pe_re_flag(&resumed.progress.flags, PE_RE1_FG_PREVIEW, PE_RE1_AQUARIUM_DRAINED));
     CHECK(pe_re_session_step(&resumed, store, 15100, 5100, 1, why, sizeof why) == PE_RE_ROOM &&
           resumed.stage == 3 && resumed.room == 0x0c && resumed.x == 2800 && resumed.z == 13600);
+    PeReEnemyPlacement placements[PE_RE_ENEMIES_MAX] = {0};
+    CHECK(pe_re_session_enemies(&resumed, placements, PE_RE_ENEMIES_MAX) == 1);
+    const PeReEnemyPlacement plant = placements[0];
+    CHECK(plant.kind == PE_RE1_PLANT_KIND && plant.slot == 0 && plant.killed_flag == PE_RE1_PLANT_DEFEAT &&
+          plant.x == 10800 && plant.z == 10800 && plant.y == -7000 && plant.dir == 3572);
+    CHECK(!pe_re_session_defeated(&resumed, PE_RE1_PLANT_DEFEAT));
+    CHECK(!pe_re_session_enemies(&resumed, placements, PE_RE_ENEMIES_MAX));
+    pe_re_save_encode(&resumed, 1, bytes);
+    pe_re_session_end(&resumed);
+    if (pe_re_save_decode(bytes, &saved) || pe_re_session_resume(&resumed, store, &saved, why, sizeof why)) {
+        CHECK(0);
+        return;
+    }
+    CHECK(!resumed.run.nenemy && !pe_re_session_enemies(&resumed, placements, PE_RE_ENEMIES_MAX));
+    CHECK(pe_re_session_step(&resumed, store, 10000, 18000, 1, why, sizeof why) == PE_RE_SAID &&
+          pe_re_has(&resumed.progress, PE_RE1_HELMET_KEY));
+    CHECK(pe_re_pickup_at(resumed.logic, &resumed.run, &resumed.progress, 10000, 18000, NULL) < 0);
     CHECK(re1_route_door(&resumed, store, 0x408, PE_RE_ROOM) &&
           re1_route_door(&resumed, store, 0x40a, PE_RE_ROOM) && !resumed.said[0]);
     pe_re_session_end(&resumed);
-    printf("RE1 Jill: crate bridge reload, aquarium drain, Standard basement key, Red Book and Plant Room\n");
+    printf("RE1 Jill: crate bridge reload, aquarium drain, Standard basement key, Red Book and Helmet Key after Plant 42 defeat\n");
 }
 
 static void re1_guardhouse_route(PeReSession *s, const char *store) {

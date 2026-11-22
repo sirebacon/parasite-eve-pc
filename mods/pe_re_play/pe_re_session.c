@@ -185,7 +185,7 @@ void pe_re_session_place(PeReSession *s, double x, double z, int facing) {
 
 enum { CREST_PASSAGE_ROOM = 0x1A, CREST_GATE_ROOM = 0x1B, CREST_GATE_LOCK = 0x97 };
 enum { COURTYARD_STAGE = 2, POOL_ROOM = 1, WATERFALL_ROOM = 2 };
-enum { DORM_003_ROOM = 0x0A, PLANT_ROOM = 0x0C, BOOKSHELF_DOOR = 2, BOOKSHELF_TRIGGER = 7 };
+enum { DORM_003_ROOM = 0x0A, BOOKSHELF_DOOR = 2, BOOKSHELF_TRIGGER = 7 };
 enum { DORM_002_ROOM = 6, BASEMENT_ROOM = 0x0d, AQUARIUM_ROOM = 0x0e, SUPPLY_CLOSET = 0x10, CONTROL_ROOM = 0x11 };
 
 int pe_re1_is_pool(const PeImpRoomLogic *room) {
@@ -244,7 +244,7 @@ static PeReChange take_door(PeReSession *s, const char *store, const PeImpDoor *
         return PE_RE_SAID;
     }
     if (s->logic->game == PE_IMP_RE1 && s->stage == PE_RE1_GUARDHOUSE_STAGE && s->room == DORM_003_ROOM &&
-        d->room == PLANT_ROOM && d->zone.id == BOOKSHELF_DOOR && !re1_use_done(s, PE_RE1_RED_BOOK_PLACED)) {
+        d->room == PE_RE1_PLANT_ROOM && d->zone.id == BOOKSHELF_DOOR && !re1_use_done(s, PE_RE1_RED_BOOK_PLACED)) {
         snprintf(s->said, sizeof s->said, "The bookshelf blocks the passage.");
         return PE_RE_SAID;
     }
@@ -513,7 +513,7 @@ static PeReChange re1_bookshelf_door(PeReSession *s, const char *store, char *wh
     pe_imp_logic_section(s->logic, PE_IMP_LOGIC_DOOR, &count, NULL);
     for (uint32_t i = 0; i < count; i++) {
         PeImpDoor door;
-        if (!pe_imp_logic_door(s->logic, i, &door) && door.zone.id == BOOKSHELF_DOOR && door.room == PLANT_ROOM &&
+        if (!pe_imp_logic_door(s->logic, i, &door) && door.zone.id == BOOKSHELF_DOOR && door.room == PE_RE1_PLANT_ROOM &&
             pe_re_scd_live(&s->run, door.at))
             return take_door(s, store, &door, why, n);
     }
@@ -786,18 +786,29 @@ PeReChange pe_re_session_use(PeReSession *s, uint16_t item) {
 }
 
 static unsigned enemy_group(const PeReSession *s) {        /* Sce_em_set's flag set */
+    if (s->logic && s->logic->game == PE_IMP_RE1) return PE_RE_FG_ENEMY;
     return s->stage >= 3 || pe_re_flag(&s->progress.flags, PE_RE_FG_STATUS, 6) ? PE_RE_FG_ENEMY + 1 : PE_RE_FG_ENEMY;
 }
 
 int pe_re_session_enemies(const PeReSession *s, PeReEnemyPlacement *out, int max) {
     uint32_t size = 0;
     int n = 0;
-    if (!s->logic || !s->run.ran) return 0;
+    if (!s->logic || (!s->run.ran && !s->run.re1_setup)) return 0;
+    const int re1 = s->logic->game == PE_IMP_RE1;
     const uint8_t *rdt = pe_imp_logic_section(s->logic, PE_IMP_LOGIC_RDT0, NULL, &size);
     for (int i = 0; rdt && i < s->run.nenemy && n < max; i++) {
         const uint32_t at = s->run.enemy[i];
         if (at + 22 > size) continue;
-        const uint8_t *e = rdt + at;                        /* SCE_EM_SET_WORK, 22 bytes */
+        const uint8_t *e = rdt + at;
+        if (re1) {
+            if (pe_re_flag(&s->progress.flags, PE_RE_FG_ENEMY, e[3])) continue;
+            out[n++] = (PeReEnemyPlacement){
+                .slot = e[18], .kind = e[1], .behaviour = e[2], .killed_flag = e[3],
+                .x = re1_signed_word(e + 12), .y = re1_signed_word(e + 14),
+                .z = re1_signed_word(e + 16), .dir = re1_signed_word(e + 8) & 0xfff
+            };
+            continue;
+        }
         if (e[9] != 0xFF && pe_re_flag(&s->progress.flags, enemy_group(s), e[9])) continue;   /* killed */
         PeReEnemyPlacement *p = &out[n++];
         p->slot = e[2], p->kind = e[3], p->behaviour = (uint16_t)(e[4] | e[5] << 8);
