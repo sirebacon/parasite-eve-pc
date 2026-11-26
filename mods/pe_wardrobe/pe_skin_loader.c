@@ -32,6 +32,8 @@
 #include <string.h>
 
 #include "pe_wardrobe.h"
+#include "pe_skin_collision.h"
+#include "pe_skin_gown.h"
 #include "pe_game.h"
 #include "pe_mod_host.h"
 #include "pe_mod_menu.h"
@@ -46,39 +48,20 @@
 #include "pe1/scene_assets.h"
 #include "pe1/scene_room_load.h"
 #include "pe1/field_actor.h"
+#include "pe_skin_rows.h"
 
-#define PE_MAX_SKINS     64
 #define PE_FILE_MAX      0x400000u   /* rooms.bin is ~800 KB */
-#define PE_ROWS_PER_BANK 48
-#define PE_ROOM_SLOT0    24          /* room animation rows: bank_rows[0][24..47] */
-#define PE_ROOM_SLOTS    24
-#define PE_BANK_LONG_DRESS 11
 #define PE_GUN_AYA       0x12        /* Aya's right hand, second finger segment */
 #define PE_IDLE_MODE     0x15
 #define PE_LIBERATE      0x20000u
 #define PE_NEW_BUNDLE    0x200000u
 #define PE_SECTOR        2048u
 
-typedef struct { u8 *data; u32 size; } PeBlob;
-
-typedef struct {
-    char folder[72];
-    int checked, present;   /* model.bin found (lists ask every frame) */
-    int loaded, ok;
-    PeBlob model, tex, day[9], rooms;
-    u32 nrooms;
-    int gun_part;
-} PeSkin;
-
-static PeSkin s_skin[PE_MAX_SKINS];
-static int s_skins;
 static PeBlob s_game_tex;               /* the game's own player textures, kept at its upload */
 static int s_game_tex_bank = -1;
 static PeSkin *s_tex;                   /* whose textures are in VRAM: NULL the game's */
 static int s_tex_known;
 static PeSkin *s_pointed;               /* the skin bank_slots / rows point at, or NULL */
-static PeSkin *s_room_pack;             /* the room pack whose rows are in, with the game's model */
-static void *s_replaced[PE_ROWS_PER_BANK];   /* the game's row each pointed slot held */
 static int s_gun_written = -1;
 static int s_instant;                   /* F1: swap in place (off until it is proven in game) */
 static uint32_t s_checkpoint_epoch=1;
@@ -87,7 +70,12 @@ static void pe_checkpoint_changed(void){if(s_checkpoint_epoch<UINT32_MAX)++s_che
 
 int pe_skin_instant(void) { return s_instant; }
 
-static u32 rd32(const u8 *b, u32 o) { return (u32)b[o] | (u32)b[o + 1] << 8 | (u32)b[o + 2] << 16 | (u32)b[o + 3] << 24; }
+int pe_skin_appearance_ready(const PeCostume *c) {
+    if (!c) return s_pointed == NULL;
+    if (c->bank >= 0) return !s_pointed && g_GameState.loaded_entity_bank == c->bank;
+    return !c->load && c->bundle && s_pointed && s_tex == s_pointed &&
+           !strcmp(s_pointed->folder, c->bundle);
+}
 
 /* ---- files ---- */
 static int pe_read(const char *folder, const char *name, PeBlob *b) {
@@ -98,7 +86,7 @@ static int pe_read(const char *folder, const char *name, PeBlob *b) {
         unsigned char *data;
         unsigned size;
         if (!pe_pack_read(folder, name, &data, &size, PE_FILE_MAX)) return 0;
-        if (size <= 8) { free(data); return 0; }
+        if (size < 8) { free(data); return 0; }
         b->data = data;
         b->size = (u32)size;
         return 1;
@@ -108,19 +96,11 @@ static int pe_read(const char *folder, const char *name, PeBlob *b) {
     fseek(f, 0, SEEK_END);
     n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (n <= 8 || (u32)n > PE_FILE_MAX || !(b->data = malloc((size_t)n))) { fclose(f); return 0; }
+    if (n < 8 || (u32)n > PE_FILE_MAX || !(b->data = malloc((size_t)n))) { fclose(f); return 0; }
     b->size = (u32)n;
-    if (fread(b->data, 1, (size_t)n, f) != (size_t)n) { free(b->data); b->data = NULL; fclose(f); return 0; }
+    if (fread(b->data, 1, (size_t)n, f) != (size_t)n) { free(b->data); b->data = NULL; b->size = 0; fclose(f); return 0; }
     fclose(f);
     return 1;
-}
-
-/* A blob in the game's container format: its directory is inside it. */
-static const SceneAssetDirectory *pe_dir(const PeBlob *b) {
-    u32 at;
-    if (!b->data || b->size < 8) return NULL;
-    at = rd32(b->data, 4);
-    return at + sizeof(SceneAssetDirectory) <= b->size ? (const SceneAssetDirectory *)(b->data + at) : NULL;
 }
 
 static PeSkin *pe_find(const char *folder, int create) {
@@ -168,6 +148,9 @@ static PeSkin *pe_load(const char *folder) {
     if (k->loaded) return k->ok ? k : NULL;
     k->loaded = 1;
     if (!pe_read(folder, "model.bin", &k->model) || !pe_dir(&k->model)) return pe_load_failed(folder, "model.bin");
+    /* Costumes must not change movement clearance. Applies to loose skins and
+     * character packs without rewriting installed assets or combat hit bounds. */
+    if (!pe_skin_normalize_movement(k->model.data, k->model.size)) return pe_load_failed(folder, "model.bin collision bounds");
     if (!pe_read(folder, "texture.bin", &k->tex) || !pe_dir(&k->tex)) return pe_load_failed(folder, "texture.bin");
     for (d = 1; d <= 8; ++d) {
         snprintf(name, sizeof name, "day%d.bin", d);
@@ -177,6 +160,19 @@ static PeSkin *pe_load(const char *folder) {
     if (!k->nrooms) pe_log("skin", "%s: rooms.bin missing or unreadable (room animations stay Aya's)", folder);
     k->gun_part = -1;
     if (pe_read(folder, "meta.bin", &meta) && !memcmp(meta.data, "PEMT", 4) && meta.data[4] < 64) k->gun_part = meta.data[4];
+    /* PEMT + gun part (u32), optionally GWN1: builder already repaired legs.
+     * Only the two built-in folders use this legacy repair; unrelated packs
+     * and Aya's own outfits retain their authored animations. The loaded
+     * cache above makes this a once-per-skin operation. */
+    if (pg_legacy(folder) && !pg_prepared(meta.data, meta.size)) {
+        unsigned rest[29][3];
+        int repaired = pg_rest(k->model.data, k->model.size, rest);
+        if (repaired) repaired = pg_blob(&k->model.data, &k->model.size, 0, rest);
+        for (d = 1; repaired && d <= 8; ++d) repaired = pg_blob(&k->day[d].data, &k->day[d].size, 0, rest);
+        if (repaired && k->nrooms) repaired = pg_blob(&k->rooms.data, &k->rooms.size, 1, rest);
+        if (!repaired) { free(meta.data); return pe_load_failed(folder, "gown animations invalid"); }
+        pe_log("skin", "%s: legacy gown leg animations repaired", folder);
+    }
     free(meta.data);
     pe_log("skin", "%s loaded: model %u, textures %u, rooms %u", folder, k->model.size, k->tex.size, k->nrooms);
     k->ok = 1;
@@ -208,10 +204,16 @@ static PeSkin *pe_wanted(void) {
     return c && c->bank < 0 && c->bundle ? pe_load(c->bundle) : NULL;
 }
 
-/* The worn game outfit's room pack, while that outfit is the loaded player bundle. */
-static PeSkin *pe_wanted_rooms(void) {
+/* The worn game outfit, while it is the loaded player bundle. */
+static const PeCostume *pe_worn_outfit(void) {
     const PeCostume *c = pe_wardrobe_worn();
-    return c && c->bank >= 0 && c->bundle && c->bank == g_GameState.loaded_entity_bank ? pe_load_rooms(c->bundle) : NULL;
+    return c && c->bank >= 0 && c->bank == g_GameState.loaded_entity_bank ? c : NULL;
+}
+
+/* That outfit's room pack. */
+static PeSkin *pe_wanted_rooms(void) {
+    const PeCostume *c = pe_worn_outfit();
+    return c && c->bundle ? pe_load_rooms(c->bundle) : NULL;
 }
 
 /* ---- textures ---- */
@@ -249,150 +251,6 @@ static int pe_textures(PeSkin *k) {
     return 1;
 }
 
-/* ---- pointers ---- */
-/* The bundle's model and rows, and a day blob's rows, as the game resolves them (Scene_Load
- * EntityTexture step 6, Scene_LoadEntityTextures steps 6 / 13; not the day blob's stream tables). */
-static void pe_point_bundle(u8 *blob) {
-    const SceneAssetDirectory *dir = SceneAsset_ResolveOffset(blob, ((SceneAssetBlob *)blob)->directoryOffset);
-    const SceneBankAssetRecord *root = SceneAsset_ResolveOffset(blob, dir->bankRootEntries & 0x3FFFFFu);
-    const SceneBankAssetRecord *rec = SceneAsset_ResolveOffset(blob, dir->bankRowEntries & 0x3FFFFFu);
-    u32 i;
-    g_GameState.bank_slots[0] = SceneAsset_ResolveOffset(blob, root->source.offsetAndId & 0xFFFFFFu);
-    for (i = 0; i < dir->bankRowEntries >> 22; ++i) {
-        const unsigned id = rec[i].source.bytes.id;
-        /* The Day 1 long dress keeps its scene rows (28-34) in room slots: pe_room_rows swaps them
-         * for their copies; the skin's jacket row 28 would replace the scene's animation. */
-        if (id >= PE_ROOM_SLOT0 && g_SceneAreaType == PE_BANK_LONG_DRESS) continue;
-        if (id < 10 * PE_ROWS_PER_BANK)
-            g_GameState.bank_rows[id / PE_ROWS_PER_BANK][id % PE_ROWS_PER_BANK] =
-                SceneAsset_ResolveOffset(blob, rec[i].source.offsetAndId & 0xFFFFFFu);
-    }
-}
-
-static void pe_point_day(u8 *blob, int remember) {
-    const SceneAssetDirectory *dir = SceneAsset_ResolveOffset(blob, ((SceneAssetBlob *)blob)->directoryOffset);
-    const SceneBankAssetRecord *rec = SceneAsset_ResolveOffset(blob, dir->bankRowEntries & 0x3FFFFFu);
-    u32 i;
-    for (i = 0; i < dir->bankRowEntries >> 22; ++i) {
-        const unsigned id = rec[i].source.bytes.id;
-        void *want = SceneAsset_ResolveOffset(blob, rec[i].source.offsetAndId & 0xFFFFFFu);
-        if (id >= PE_ROWS_PER_BANK || g_GameState.bank_rows[0][id] == want) continue;
-        if (remember) s_replaced[id] = g_GameState.bank_rows[0][id];
-        g_GameState.bank_rows[0][id] = want;
-    }
-}
-
-static int pe_day(void) {
-    const int day = g_GameState.current_story_day;
-    return day >= 1 && day <= 8 ? day : 1;
-}
-
-/* ---- room animations ---- */
-static u32 pe_row_length(const u8 *p, u32 size) {
-    if (size < 12u) return 0;
-    const unsigned flags = p[0], last = p[1], frames = p[2];
-    const u32 stride = ((frames >> 1) + 1u) * 4u;
-    const int shrt = (flags & 3u) == 2u;
-    const u32 bstride = shrt ? stride : ((frames >> 2) + 1u) * 4u;
-    u32 cur = 12u, k;
-    for (k = 0; k < 3; ++k) {
-        if (cur > size || size - cur < 4u) return 0;
-        cur += (p[cur] | p[cur + 1] << 8) ? 4u : stride;
-    }
-    for (k = 0; k < (last + 1u) * 3u; ++k) {
-        if (cur > size || size - cur < 4u) return 0;
-        cur += (shrt ? (p[cur] | p[cur + 1] << 8) != 0 : p[cur] != 0) ? 4u : bstride;
-    }
-    if (cur > size) return 0;
-    return cur;
-}
-
-static u32 pe_fingerprint(const u8 *p) {
-    const u32 n = p ? pe_row_length(p, 0x10000u) : 0;
-    u32 h = 0x811C9DC5u, i;
-    if (n < 300u) return 0;     /* the shortest: one frame on the 23-part long dress */
-    for (i = 0; i < n; ++i) h = (h ^ p[i]) * 0x01000193u;
-    return h;
-}
-
-/* The retargeted copy of Aya's room row `p`, or NULL (the table is sorted by fingerprint). */
-static void *pe_room_copy(const PeSkin *k, const void *p) {
-    const u32 fp = pe_fingerprint(p);
-    const u8 *t = k->rooms.data + 8;
-    int lo = 0, hi = (int)k->nrooms - 1;
-    if (!fp) return NULL;
-    while (lo <= hi) {
-        const int mid = (lo + hi) / 2;
-        const u32 f = rd32(t, 12u * (u32)mid);
-        if (f == fp) {
-            const u32 off = rd32(t, 12u * (u32)mid + 4), size = rd32(t, 12u * (u32)mid + 8);
-            if (off > k->rooms.size || size > k->rooms.size - off) return NULL;
-            return pe_row_length(k->rooms.data + off, size) ? k->rooms.data + off : NULL;
-        }
-        if (f < fp) lo = mid + 1;
-        else hi = mid - 1;
-    }
-    return NULL;
-}
-
-static int pe_ours(const PeSkin *k, const void *p) {
-    const u8 *b = p;
-    int d;
-    if (b >= k->model.data && b < k->model.data + k->model.size) return 1;
-    if (k->nrooms && b >= k->rooms.data && b < k->rooms.data + k->rooms.size) return 1;
-    for (d = 1; d <= 8; ++d) if (b >= k->day[d].data && b < k->day[d].data + k->day[d].size) return 1;
-    return 0;
-}
-
-/* A row drives exactly as many bones as the model Aya wears has parts; more would write past her
- * matrices. */
-static int pe_fits(const void *row) {
-    const RenderObjectHeader *h = g_GameState.bank_slots[0];
-    return h && ((const u8 *)row)[1] + 1u == h->part_count;
-}
-
-static int pe_any_ours(const void *p) {
-    int i;
-    for (i = 0; i < s_skins; ++i) if (s_skin[i].ok && pe_ours(&s_skin[i], p)) return 1;
-    return 0;
-}
-
-/* Put the game's own row back in every slot still pointing at a skin's or room pack's copy, before
- * another goes on: a copy is matched by Aya's original's fingerprint, never by another copy's, so
- * one left in place would play on the next model (a 31-bone evening row on 29-part Harlequin).
- * A slot the room load has refilled since is the game's already and stays. */
-static void pe_restore_rows(void) {
-    int slot;
-    for (slot = 0; slot < PE_ROWS_PER_BANK; ++slot)
-        if (s_replaced[slot] && pe_any_ours(g_GameState.bank_rows[0][slot])) g_GameState.bank_rows[0][slot] = s_replaced[slot];
-    memset(s_replaced, 0, sizeof s_replaced);
-    s_room_pack = NULL;
-}
-
-static void pe_room_rows(const PeSkin *k) {
-    int slot;
-    if (!k->nrooms) return;
-    for (slot = PE_ROOM_SLOT0; slot < PE_ROOM_SLOT0 + PE_ROOM_SLOTS; ++slot) {
-        void *p = g_GameState.bank_rows[0][slot], *copy;
-        if (!p || pe_ours(k, p) || !(copy = pe_room_copy(k, p)) || !pe_fits(copy)) continue;
-        s_replaced[slot] = p;
-        g_GameState.bank_rows[0][slot] = copy;
-    }
-}
-
-/* A row the game started before we pointed its slot (a door script installs and starts it in one
- * frame): swap the running animation for ours, same frame count. */
-static void pe_running_row(const PeSkin *k) {
-    FieldActor *player = g_PlayerEntity;
-    void *a, *copy = NULL;
-    int slot;
-    if (!player || !(a = player->action_data) || pe_ours(k, a)) return;
-    for (slot = 0; slot < PE_ROWS_PER_BANK && !copy; ++slot)
-        if (s_replaced[slot] == a && pe_ours(k, g_GameState.bank_rows[0][slot])) copy = g_GameState.bank_rows[0][slot];
-    if (!copy && k->nrooms) copy = pe_room_copy(k, a);
-    if (copy && ((u8 *)copy)[2] == ((u8 *)a)[2] && pe_fits(copy)) player->action_data = copy;
-}
-
 /* The weapon model follows the player's part animation_id (0x12, Aya's hand). */
 static void pe_gun_part(const PeSkin *k) {
     s16 *id = &g_GameState.scene_object.animation_id;
@@ -424,16 +282,22 @@ static void pe_keep(PeSkin *k) {
 }
 
 /* A game outfit worn where the story has another: the room's animations for that other skeleton
- * are swapped for the pack's copies, retargeted to the outfit's (the model stays the game's). */
+ * are swapped for the pack's copies, retargeted to the outfit's (the model stays the game's). Rows
+ * with no copy (no pack, or none for that row) are fitted to the outfit's parts (pe_fit_rows). */
 static void pe_keep_rooms(void) {
     PeSkin *r;
+    int outfit;
     if (s_pointed) return;
-    r = pe_can_apply() ? pe_wanted_rooms() : NULL;
-    if (s_room_pack && s_room_pack != r) pe_restore_rows();     /* that outfit came off */
-    if (!r) return;
+    outfit = pe_can_apply() && pe_worn_outfit();
+    r = outfit ? pe_wanted_rooms() : NULL;
+    if ((s_room_pack && s_room_pack != r) || (s_fitting && !outfit)) pe_restore_rows();   /* that outfit came off */
+    if (!outfit) return;
     s_room_pack = r;
-    pe_room_rows(r);
-    pe_running_row(r);
+    if (r) {
+        pe_room_rows(r);
+        pe_running_row(r);
+    }
+    s_fitting |= pe_fit_rows();
 }
 
 /* Her actor takes the model and idle row again, as the room load does (step 0x27). */
@@ -537,6 +401,7 @@ static int pe_on_load(void *ctx, void *user) {
     (void)user;
     s_tex_known = 0;
     s_tex = s_pointed = s_room_pack = NULL;
+    s_fitting = 0;
     s_gun_written = -1;
     memset(s_replaced, 0, sizeof s_replaced);
     return 0;
@@ -556,7 +421,7 @@ void pe_skin_register(const char *mod_id) {
 #if PE_NATIVE_STATE_CPU_COMPONENTS
 #include "pe_checkpoint_collection.h"
 int pe_skin_checkpoint_walk(const unsigned char*in,unsigned char*out,int apply){
-if(s_checkpoint_epoch==UINT32_MAX||s_tex||s_pointed||s_room_pack)return 0;for(int i=0;i<s_skins;i++)if(s_skin[i].loaded)return 0;for(int i=0;i<PE_ROWS_PER_BANK;i++)if(s_replaced[i])return 0;
+if(s_checkpoint_epoch==UINT32_MAX||s_tex||s_pointed||s_room_pack||s_fitting)return 0;for(int i=0;i<s_skins;i++)if(s_skin[i].loaded)return 0;for(int i=0;i<PE_ROWS_PER_BANK;i++)if(s_replaced[i])return 0;
 if((s_game_tex.size&&!s_game_tex.data)||s_game_tex.size>PE_FILE_MAX)return 0;
 if(apply&&(!in||!pe_skin_checkpoint_walk(in,0,0)))return 0;PeCheckpointWire w={in,out,0,apply,1};PE_CK_U(w,s_checkpoint_epoch,1,UINT32_MAX-1,1);PE_CK_S(w,s_game_tex_bank,-1,255,1);PE_CK_U(w,s_game_tex.size,0,PE_FILE_MAX,1);PE_CK_S(w,s_instant,0,1,1);PE_CK_S(w,s_tex_known,0,1,0);PE_CK_S(w,s_gun_written,-1,INT_MAX,0);return w.ok&&w.at==24;}
 #endif

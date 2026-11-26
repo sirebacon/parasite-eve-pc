@@ -1,9 +1,11 @@
 #include "pe_mod_menu.h"
 #include "pe_pages.h"
+#include "pe_combat_presets.h"
 
 void pe_pages_describe(void) {
     pe_menu_top_page(PE_MENU_PAGE, "Version " PE_ENHANCEMENTS_VERSION ". Quality of life, rebalance, economy and collection, by topic.", 10);
     pe_menu_begin(PE_MENU_PAGE);
+    pe_combat_presets_register();
     pe_menu_page(PE_PAGE_MOVEMENT, "Always run and how fast Aya moves.", 10);
     pe_menu_page(PE_PAGE_COMBAT, "Damage rules, gun mods and Parasite Energy.", 20);
     pe_menu_page(PE_PAGE_MOD_EFFECTS, "How gun and armor mods behave in battle.", 10);
@@ -11,6 +13,9 @@ void pe_pages_describe(void) {
     pe_menu_page(PE_PAGE_QUICK_POWERS, "Choose which PE powers cost half a turn bar.", 10);
     pe_menu_page(PE_PAGE_COMBINE, "Combine carried medicines before a battle.", 30);
     pe_menu_page(PE_PAGE_SMOKE, "Buy an escape item for ordinary battles.", 40);
+    pe_menu_page(PE_PAGE_BP, "Bonus Points upgrades, refund policy and playstyle guidance.", 25);
+    pe_menu_page(PE_PAGE_BP_ADVANCED, "Choose BP features independently; preview and Apply changes explicitly.", 20);
+    pe_menu_page(PE_PAGE_DEBUG_BP, "BP screen previews and unfinished rules-preset previews.", 40);
     pe_menu_page(PE_PAGE_ECONOMY, "Junk, difficulty, and Wayne's Workshop services.", 30);
     pe_menu_page(PE_PAGE_REQUISITION, "Buy supplies and economy effects with Junk.", 5);
     pe_menu_page(PE_PAGE_CATALOG, "Install unlocked effects on your equipped gun or armor.", 10);

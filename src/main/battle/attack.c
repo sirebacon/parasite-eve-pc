@@ -141,8 +141,13 @@ int Battle_StepCharacterAction(BattleInitSlot *slot)
     case 9:
     case 11:
         caseEntity = D_8009D254;
+#ifdef PE_MELEE_PROTOTYPE
+        if (Battle_MeleeStepStrike(caseEntity, turnSlot->actor))
+            break;
+#else
         if (caseEntity->animLastFrame != caseEntity->animPrev.parts.integer)
             break;
+#endif
         indexB = g_BattleActionIndex;
         if (g_BattleActionQueue[indexB].command == 0x189) {
             idleActor = g_ActiveActor;
@@ -265,6 +270,12 @@ int Battle_StepCharacterAction(BattleInitSlot *slot)
 u8 g_BattleHitTimer;
 extern u8 g_BattleActionIndex;
 extern u8 g_BattleHitPending;
+u8 g_BattleTestIgnoreHitReactions;
+
+static inline s8 Battle_RolledReaction(void)
+{
+    return g_BattleTestIgnoreHitReactions ? 0 : g_EvasionOutcome.reaction;
+}
 
 /* Apply the evasion outcome Battle_CheckEvasion left in g_EvasionOutcome to
  * one target: a resolved hit sets the hit state, the
@@ -285,7 +296,7 @@ static inline void ApplyEvasionOutcome(BattleEntity *target)
         EnemyCoreFlagBits *bits = (EnemyCoreFlagBits *)&core->coreFlags;
         bits->hitState = 1;
         bits->category = g_ActiveActor->action->attackWord >> 20;
-        bits->reaction = g_EvasionOutcome.reaction;
+        bits->reaction = Battle_RolledReaction();
     }
     else if (g_EvasionOutcome.status == 0)
     {
@@ -315,13 +326,18 @@ void Battle_ResolveHitOnTimer(void)
     actionId = action->actionCode.actionId;
     if (actionId == 8)
     {
+        int replay = 0;
         Battle_CheckEvasion(selectedSlot->actor, &g_EvasionOutcome, 0);
+#ifdef PE_MELEE_PROTOTYPE
+        replay = Battle_MeleeOnResolve(selectedSlot->actor, g_EvasionOutcome.status);
+#endif
         if (g_EvasionOutcome.status == 1)
         {
             BattleEntity *thief = selectedSlot->actor;
             Asset_Find08Alt(0x46D, 0, thief->renderObject.target_x, thief->renderObject.target_y, thief->renderObject.target_z);
-            /* A released target has nothing left to steal. */
-            if ((g_ActiveActor->action->turnWord & 0x6000) && thief->core != NULL)
+            /* Steal applies to the original attack. A follow-up does not
+             * grant another roll, and a released target has nothing left. */
+            if (!replay && (g_ActiveActor->action->turnWord & 0x6000) && thief->core != NULL)
             {
                 stealMode = (((EnemyCombatant *)selectedSlot->actor->core)->statusFlags2 >> 0xC) & 3;
                 switch (stealMode)
@@ -332,7 +348,11 @@ void Battle_ResolveHitOnTimer(void)
                     {
                     case 2:
                         PE_HOOK(PE_HOOK_STEAL, NULL);
-                        if (Inv_AddItem(((EnemyCombatant *)selectedSlot->actor->core)->stealItemId) != 0)
+                        int stolen_item = ((EnemyCombatant *)selectedSlot->actor->core)->stealItemId;
+                        int stolen_result = Inv_AddItem(stolen_item);
+                        PeHookStealResult steal_event = {stolen_item, stolen_result == 0};
+                        PE_HOOK(PE_HOOK_STEAL_RESULT, &steal_event);
+                        if (stolen_result != 0)
                         {
                             EnemyCombatant *enemy = selectedSlot->actor->core;
                             g_BattleSaveOverlayActive = 1;
@@ -356,7 +376,7 @@ void Battle_ResolveHitOnTimer(void)
         s16 reaction;
         Battle_CheckEvasion(selectedSlot->actor, &g_EvasionOutcome, 0);
         ApplyEvasionOutcome(selectedSlot->actor);
-        reaction = g_EvasionOutcome.reaction;
+        reaction = Battle_RolledReaction();
         if (g_EvasionOutcome.status == 1)
         {
             for (target = (BattleEntity *)g_FieldActorListHead; target != 0; target = target->next)
@@ -590,6 +610,7 @@ SavePromptBlock g_BattleScanPanel;
 void Battle_ApplySpellEffect(u32 idx, BattleEntity *ent) {
     BattleActionSoundTable soundTable;
     s32 dmg;
+    s32 hp_before;
 
     PE_HOOK(PE_HOOK_SPELL, (&(PeHookSpell){idx, ent}));
     dmg = 0;
@@ -598,6 +619,7 @@ void Battle_ApplySpellEffect(u32 idx, BattleEntity *ent) {
         Akao_SendPositionalCmdStereo(soundTable.soundId[idx], 1, D_8009D254->posX.parts.integer, D_8009D254->posY.parts.integer, D_8009D254->posZ.parts.integer);
         ACTOR = D_8009D254->core;
     }
+    hp_before = (s16)ACTOR->curHP;
     switch (idx) {
     case PE_SPELL_HEAL_1:
         dmg = 0x3C0000;
@@ -742,6 +764,8 @@ void Battle_ApplySpellEffect(u32 idx, BattleEntity *ent) {
         ACTOR->stateFlags = (ACTOR->stateFlags | 0x80000) & ~0x200000;
         break;
     }
+    PE_HOOK(PE_HOOK_SPELL_DONE, (&(PeHookSpellDone){idx, ent, ACTOR, hp_before, &dmg}));
+    (void)hp_before;
     if ((s16)ACTOR->maxHP < (s16)ACTOR->curHP) {
         ACTOR->curHP = ACTOR->maxHP;
     }
