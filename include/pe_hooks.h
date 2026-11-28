@@ -93,6 +93,8 @@ typedef enum PeHookId {
     PE_HOOK_SPELL_DONE,  /* PeHookSpellDone: Battle_ApplySpellEffect after the power's effect,
                           * before the HP clamp and the PE drain; *drain may change; appended */
     PE_HOOK_STEAL_RESULT, /* PeHookStealResult: native inventory transfer completed */
+    PE_HOOK_AUTO_MEDICINE, /* PeHookAutoMedicine: Auto Medicine is about to heal; the order it
+                            * tries the medicines in may change; appended */
     PE_HOOK_ACTOR_RENDER, /* PeHookActorDraw: Entity_FrameUpdate, before an actor's model is posed
                            * and drawn (view set); nonzero: the actor is a mod's own and the mod
                            * drew it: the game's posing, draw and shadow are skipped; appended */
@@ -105,6 +107,14 @@ typedef enum PeHookId {
     PE_HOOK_FIELD_CAMERA, /* PeHookFieldCamera: nonzero supplies a fixed view for native actor drawing */
     PE_HOOK_FIELD_MOVE, /* FieldActor *: after Aya integrates a movement step; positive consumes it
                          * in a preview and restores her host-room position */
+    PE_HOOK_ITEM_ACTIONS_READY, /* PeHookItemActions: custom actions and initial cursor are ready */
+    PE_HOOK_ITEM_ACTION_ROW, /* PeHookItemActionRow: remap or draw a popup row */
+    PE_HOOK_QUICK_SEND_STACK, /* PeHookQuickSendStack: optional storage stack transfer */
+    PE_HOOK_MIRROR_MODEL, /* FieldActor * reflected owner: return 1 to draw its current model. */
+    PE_HOOK_ENEMY_FIELD, /* PeHookEnemyField: Entity_WriteFieldByCmd entry (script ops 90 / 206 on an
+                          * actor); the value may be changed */
+    PE_HOOK_ENEMY_POWER, /* PeHookEnemyPower: an actor's script sets an attack's power (ops 112 / 183); the
+                          * power may be changed */
     PE_HOOK_COUNT
 } PeHookId;
 
@@ -131,6 +141,13 @@ typedef struct PeHookActorDraw {
 typedef struct PeHookStealResult {
     int item, success;
 } PeHookStealResult;
+
+/* The medicines Auto Medicine tries, first to last (item ids); natively Full Recover, then
+ * Medicine 4 down to Medicine 1. Ids other than those five are skipped. */
+typedef struct PeHookAutoMedicine {
+    int *order;
+    int count;
+} PeHookAutoMedicine;
 
 typedef struct PeHookPeRecovery {
     const void *actor;
@@ -312,6 +329,17 @@ typedef enum PeNewGameKind {
     PE_NEW_GAME_TUTORIAL = 3,  /* MenuCard_RunListScreen result 3 */
 } PeNewGameKind;
 
+typedef struct PeHookEnemyField {
+    struct FieldActor *actor;
+    int code;  /* field code, 0x28+ (battle/context.c) */
+    int value;
+} PeHookEnemyField;
+
+typedef struct PeHookEnemyPower {
+    struct FieldActor *actor;
+    int power;
+} PeHookEnemyPower;
+
 typedef struct PeHookNewGame {
     int kind; /* PeNewGameKind */
 } PeHookNewGame;
@@ -360,6 +388,17 @@ typedef struct PeHookItemActions {
     int context;                  /* g_MenuItemActionContext: 0 consumables, 1 and 2 others */
     int list_id, slot;            /* g_MenuActiveItemList (0 = Aya's bag), g_MenuActiveItemSlot */
 } PeHookItemActions;
+
+typedef struct PeHookItemActionRow {
+    struct MenuWidgetNode *list;
+    int row;
+} PeHookItemActionRow;
+
+typedef struct PeHookQuickSendStack {
+    int from_mode, from_index, vacancy;
+    int amount; /* zero queries, positive commits exactly that many */
+    int count, capacity, moved;
+} PeHookQuickSendStack;
 
 /* Removing the item on slot `index` of the active list (g_InvItemPtr). A handler that keeps the
  * slot (it took one copy off a stack) sets result to the item id it gave and returns nonzero. */

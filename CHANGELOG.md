@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.16-beta
+
+- Set a six-digit seed under **F1 → Randomizer** before starting a New Game to shuffle items and keys. Enemy randomization has its own toggle. Loading a save restores its seed and layout.
+- EX Game now preserves the quantities of stacked items in storage when it resets the starting bag.
+- The experimental Android ARM64 build can import both game discs into private app storage and transfer saves through the system file picker. See the [Android setup guide](android/README.md).
+
+- Enable **Quick Send** under **PE Enhancements → Inventory** to transfer one item between panes or move a whole storage stack when it fits. Quick Send starts off.
+- Bestiary progress can appear above a defeated enemy. The counter turns gold when the kill reaches the next unlock. Toggle it under **Collection → Bestiary**.
+- Choose **Original** or **Enhanced** under **PE Enhancements → Combat → Combat preset** to apply settings across enabled combat mods. Adjusting those settings individually shows **Custom** when they differ from both presets.
+
+## 0.15
+
+- Added **Hold to skip dialogue** under Movement: hold Square, R1 or L1 to turn dialogue pages quickly. Questions still wait for your answer. Off by default.
+- Added **Auto Medicine order** under Combat: the Auto Medicine armor effect can use the weakest medicine first instead of Full Recover.
+- Added **Departure Mono** and **Plain Sans** to **F1 → Font**, beside Original and Pixel Sans.
+- Fixed the warehouse Crab's bubbles and eye beams doing no damage to Aya.
+- Fixed a save whose mods' data another build partly overwrote being refused as unreadable. It now loads, and only the lost mod records start over.
+- An update to the optional HD background pack fixes the restaurant and hanging signs in Chinatown, which were drawn over the street with black dots along their edges. Update the pack through **Escape → Mods → Background pack**.
+- Added more diagnostics to the opt-in debug controls and a headless test harness for automated gameplay checks.
+
 ## 0.14
 
 - Fixed opened chest interiors shifting out of sync with the rest of the chest at 60 Hz.

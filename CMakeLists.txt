@@ -17,7 +17,7 @@ if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET
     set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum supported macOS version")
 endif()
 option(PE_PS5_GAME "Build the native game with the public PS5 SDK" OFF)
-project(parasite-eve-pc VERSION 0.14.0 LANGUAGES C)
+project(parasite-eve-pc VERSION 0.16.0 LANGUAGES C)
 if(PE_PS5_GAME)
     include(cmake/ps5/game.cmake)
 endif()
@@ -26,6 +26,9 @@ option(PE_MACOS_BUNDLE "Package the macOS application bundle" OFF)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+if(ANDROID)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 option(PE_ENABLE_COVERAGE "Measure execution coverage with Clang/LLVM" OFF)
 if(PE_ENABLE_COVERAGE)
@@ -39,6 +42,8 @@ endif()
 
 option(BUILD_TESTING "Build original game tests" OFF)
 include(CTest)
+
+option(PE_MELEE_PROTOTYPE "Build the experimental Melee Combat features" OFF)
 
 # Mod host (mods/). Off: the PE_HOOK lines compile to nothing.
 option(PE_MODS "Build with the mod host and the mods in mods/" OFF)
@@ -155,6 +160,43 @@ elseif(WIN32)
         URL_HASH SHA256=e8e74cdeefe5fb78b3ae6e90cd542babf788fa9480029cfcee6fd9ced42b7910 EXCLUDE_FROM_ALL)
     FetchContent_MakeAvailable(pe_curl)
     target_link_libraries(pe_download_deps INTERFACE CURL::libcurl)
+elseif(ANDROID)
+    # Android has no system libcurl. Keep the same download and screenshot
+    # implementation, backed by native TLS and the device's system roots.
+    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(pe_mbedtls
+        URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+        URL_HASH SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+        EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(pe_mbedtls)
+    set(MBEDTLS_INCLUDE_DIR "${pe_mbedtls_SOURCE_DIR}/include")
+    set(MBEDTLS_LIBRARY mbedtls)
+    set(MBEDX509_LIBRARY mbedx509)
+    set(MBEDCRYPTO_LIBRARY mbedcrypto)
+    set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_MBEDTLS ON CACHE BOOL "" FORCE)
+    set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+    set(USE_NGHTTP2 OFF CACHE BOOL "" FORCE)
+    set(USE_LIBIDN2 OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_GSSAPI OFF CACHE BOOL "" FORCE)
+    set(CURL_ZLIB OFF CACHE BOOL "" FORCE)
+    set(CURL_BROTLI OFF CACHE BOOL "" FORCE)
+    set(CURL_ZSTD OFF CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
+    set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+    set(CURL_CA_PATH /system/etc/security/cacerts CACHE STRING "Android trusted certificate directory")
+    FetchContent_Declare(pe_curl
+        URL https://github.com/curl/curl/releases/download/curl-8_23_0/curl-8.23.0.tar.gz
+        URL_HASH SHA256=e3de77cfa6367083c776a26647fc9f633b538c06c3baa73d931a252ac8f72b49
+        EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(pe_curl)
+    target_link_libraries(pe_download_deps INTERFACE CURL::libcurl)
 else()
     find_package(CURL REQUIRED)
     target_link_libraries(pe_download_deps INTERFACE CURL::libcurl)
@@ -165,10 +207,20 @@ else()
 endif()
 
 # The executable starts the original game and compiles its modules in place.
-add_executable(parasite-eve-pc src/main/boot/main.c src/main/boot/crash_report.c src/main/boot/crash_report_posix.c)
+if(ANDROID)
+    add_library(parasite-eve-pc SHARED src/main/boot/main.c src/main/boot/crash_report.c src/main/boot/crash_report_posix.c)
+    set_target_properties(parasite-eve-pc PROPERTIES OUTPUT_NAME main)
+    target_compile_definitions(parasite-eve-pc PRIVATE main=SDL_main)
+else()
+    add_executable(parasite-eve-pc src/main/boot/main.c src/main/boot/crash_report.c src/main/boot/crash_report_posix.c)
+    if(MINGW)
+        # The standalone Windows game must also work without MinGW runtime DLLs.
+        target_link_options(parasite-eve-pc PRIVATE -static)
+    endif()
+endif()
 target_include_directories(parasite-eve-pc PRIVATE include)
 target_link_libraries(parasite-eve-pc PRIVATE psyz pe_download_deps ${CMAKE_DL_LIBS})
-set(PE_BUILD_ID "0.14-source")
+set(PE_BUILD_ID "0.16-source")
 execute_process(COMMAND git rev-parse --short=12 HEAD
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     OUTPUT_VARIABLE PE_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -447,6 +499,10 @@ add_library(parasite-eve-original OBJECT
     src/overlays/room_lib/timed_spawn.c
     src/overlays/room_lib/homing_projectile_seeds.c
     src/overlays/room_lib/script_args.c)
+if(PE_MELEE_PROTOTYPE)
+    target_sources(parasite-eve-original PRIVATE src/main/battle/melee.c)
+    target_compile_definitions(parasite-eve-original PRIVATE PE_MELEE_PROTOTYPE=1)
+endif()
 pe_configure_object_library(parasite-eve-original)
 target_link_libraries(parasite-eve-original PRIVATE psyz)
 set_property(SOURCE src/main/boot/init.c src/main/boot/mouse_input.c APPEND PROPERTY INCLUDE_DIRECTORIES
@@ -666,6 +722,11 @@ if(BUILD_TESTING)
         $<TARGET_OBJECTS:parasite-eve-original-actor-animation>)
     target_include_directories(test-original-actor-animation PRIVATE include tests)
     target_link_libraries(test-original-actor-animation PRIVATE psyz ${PE_COMMON_GAME_LIBS})
+    if(PE_MELEE_PROTOTYPE AND PE_MODS)
+        target_compile_definitions(test-original-actor-animation PRIVATE PE_MELEE_PROTOTYPE=1 PE_MODS=1)
+        add_test(NAME prototype-melee-damage-rules COMMAND test-original-actor-animation
+            --melee-rules ${CMAKE_BINARY_DIR}/melee-rules-evidence)
+    endif()
     add_test(NAME original-game-movie-early-exit COMMAND test-original-actor-animation --movie-early-exit)
     set_tests_properties(original-game-movie-early-exit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30 LABELS "game-assets;audio")
     add_test(NAME original-game-movie-audio-lock-order COMMAND test-original-actor-animation --movie-audio-lock-order)
@@ -721,6 +782,10 @@ if(BUILD_TESTING)
             ${CMAKE_SOURCE_DIR}/tests/frame_interpolation.py $<TARGET_FILE:parasite-eve-pc>)
         set_tests_properties(original-game-frame-interpolation PROPERTIES SKIP_RETURN_CODE 77
             TIMEOUT 420 LABELS "game-assets;gpu")
+        add_test(NAME original-game-chinatown-interpolation COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/chinatown_interpolation.py $<TARGET_FILE:parasite-eve-pc>)
+        set_tests_properties(original-game-chinatown-interpolation PROPERTIES SKIP_RETURN_CODE 77
+            TIMEOUT 180 LABELS "game-assets;gpu")
         # Mouse support on the disc: the title, dialogue, the name entry, the Triangle and battle menus.
         add_test(NAME original-game-mouse COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/tests/mouse_game.py $<TARGET_FILE:parasite-eve-pc>
@@ -816,6 +881,14 @@ if(BUILD_TESTING)
                 ${CMAKE_SOURCE_DIR}/tests/text_renderer_game.py $<TARGET_FILE:parasite-eve-pc>
                 ${CMAKE_BINARY_DIR}/text-renderer-french-evidence french)
             set_tests_properties(original-game-text-renderer-french PROPERTIES SKIP_RETURN_CODE 77
+                TIMEOUT 600 LABELS "game-assets;mods;localization")
+            # The same for the Czech pack from the USA-disc fan patch: the patch's own style of the game's
+            # letters and its Czech ones in its pictures and widths, its pictures, on Disc 1 and Disc 2.
+            # PE_TEST_CS_PACK names it, PE_TEST_DISC2 adds Disc 2 (else skipped).
+            add_test(NAME original-game-text-renderer-czech COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/text_renderer_game.py $<TARGET_FILE:parasite-eve-pc>
+                ${CMAKE_BINARY_DIR}/text-renderer-czech-evidence czech)
+            set_tests_properties(original-game-text-renderer-czech PROPERTIES SKIP_RETURN_CODE 77
                 TIMEOUT 600 LABELS "game-assets;mods;localization")
             # The English pack (the game's own text as a pack, made here from the disc: where a new
             # language starts) chosen in the game: every frame of a New Game through the name entry
@@ -1058,6 +1131,20 @@ if(BUILD_TESTING)
             ${CMAKE_SOURCE_DIR}/localization/tests/test_fr_matches_patch.py)
         set_tests_properties(localization-french-matches-patch PROPERTIES SKIP_RETURN_CODE 77
             TIMEOUT 600 LABELS "game-assets;localization")
+        # The Czech pack from the USA-disc fan patch stays on screen wherever the English does.
+        # Needs PE_TEST_DISC and PE_TEST_CS_PACK, else skipped.
+        add_test(NAME localization-czech-box-fit COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_SOURCE_DIR}/localization/tests/test_cs_box_fit.py)
+        set_tests_properties(localization-czech-box-fit PROPERTIES SKIP_RETURN_CODE 77
+            TIMEOUT 180 LABELS "game-assets;localization")
+        # The Czech pack against the patched game itself: the real patch applied to a copy of each
+        # disc; every row, every letter the patch draws and every picture piece as the patched PS1
+        # game has them. Needs PE_TEST_CS_PATCH_DIR (the folder with CD1_pv3.ppf and CD2_pv3.ppf),
+        # PE_TEST_CS_PACK and PE_TEST_DISC (PE_TEST_DISC2 adds Disc 2), else skipped.
+        add_test(NAME localization-czech-matches-patch COMMAND ${Python3_EXECUTABLE} -I
+            ${CMAKE_SOURCE_DIR}/localization/tests/test_cs_matches_patch.py)
+        set_tests_properties(localization-czech-matches-patch PROPERTIES SKIP_RETURN_CODE 77
+            TIMEOUT 600 LABELS "game-assets;localization")
         add_test(NAME original-game-hd-hot-apply COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/tests/hd_hot_apply.py $<TARGET_FILE:parasite-eve-pc>)
         set_tests_properties(original-game-hd-hot-apply PROPERTIES SKIP_RETURN_CODE 77
@@ -1236,6 +1323,9 @@ if(BUILD_TESTING)
         ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy" LABELS "render")
     add_test(NAME original-m221-spark-ring-burst-load COMMAND test-original-actor-animation --m221-load)
     set_tests_properties(original-m221-spark-ring-burst-load PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+        ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy" LABELS "render")
+    add_test(NAME original-grab-attack-hits COMMAND test-original-actor-animation --grab-attack-hits)
+    set_tests_properties(original-grab-attack-hits PROPERTIES TIMEOUT 60
         ENVIRONMENT "PSYZ_HEADLESS=1;SDL_AUDIODRIVER=dummy" LABELS "render")
     add_test(NAME original-m269-grab-load COMMAND test-original-actor-animation --m269-load)
     set_tests_properties(original-m269-grab-load PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
