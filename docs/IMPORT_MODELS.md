@@ -4,7 +4,7 @@ How to make an imported model usable by a mod (costumes, enemies, held weapons, 
 where each kind of fix belongs. Read this before changing a model reader, the costume builder,
 the enemy builder, or any mod that shows imported models.
 
-Baseline: feat/pe-import after the fit layer (see `git log -- mods/host/import/pe_imp_fit.c`). The model audit covered RE1 (Director's Cut Dual
+Baseline: feat/pe-import after the fit layer (see `git log -- mods/import/core/pe_imp_fit.c`). The model audit covered RE1 (Director's Cut Dual
 Shock), RE2 disc 1 and RE3: 2,360 models, none failing to load. Results are in
 `PE_Model_Audit_2026-11-19.md` (kept beside the repo; it lists ids and measurements only).
 
@@ -19,7 +19,7 @@ always versioned, always with a reason when something is refused.
 | The problem | Example | Fix it in |
 |---|---|---|
 | **The reader reads the disc wrong** | a wrong texture/skeleton pairing, a wrong control code, the wrong section | **The reader** (`mods/pe_src_reN/`). Bump the reader's `.version` so stores re-read. Never work around a reading bug downstream. |
-| **The data is true to the game but awkward to use** | placeholder (stub) parts, degenerate faces, faces outside the texture, scale, facing (RE models face −z) | **The fit layer** (`mods/host/import/pe_imp_fit.c`, see below). Applied per use, on a copy. |
+| **The data is true to the game but awkward to use** | placeholder (stub) parts, degenerate faces, faces outside the texture, scale, facing (RE models face −z) | **The fit layer** (`mods/import/core/pe_imp_fit.c`, see below). Applied per use, on a copy. |
 | **One consumer can't take it** | a costume texture holds 2 pages and 16 colours per group; the costume builder is rigid-only | **That consumer's builder** (`pe_wardrobe/pe_skin_build.c`, `pe_enemy_import/`). Convert it, or refuse with a reason. |
 | **One asset needs a person's call** | "this 15-bone model isn't a person", a height or name override | **A data table** in the game module, like the naming tables (`g_re2_naming`, `pe_imp_set_naming`). Not code. |
 
@@ -74,7 +74,7 @@ ids and measurements, or fixtures cut from real files.
 
 ## The fit layer
 
-`mods/host/import/pe_imp_fit.h` / `.c`. Mods ask for a model fitted for a use instead of loading it raw:
+`mods/import/core/pe_imp_fit.h` / `.c`. Mods ask for a model fitted for a use instead of loading it raw:
 
 ```c
 int pe_imp_fit(const char *root, const char *asset_id, PeImpUse use,   /* COSTUME, ENEMY, WEAPON, PROP */
@@ -153,3 +153,19 @@ out exactly as before. A model on three pages is repacked:
 - each face's UVs move with its piece, and colours are read at the original position.
 
 A texture that doesn't fit even repacked is refused with that reason.
+
+## Showing an imported model
+
+A screen that only shows a model (no wearing, no fighting) doesn't need a builder:
+- `pe_model_from_imp` (host/pe_model_imp.h) turns a Model into the viewer's PeModel. The rest pose is
+  baked into one part, and the texture goes to a private VRAM addressed the way the import stores it.
+  Pass a part number to show only that part.
+- `pe_imp_weapon_part` (pe_imp_fit.h) names the weapon's part in a `<game>:weapon/...` Model: 11 for
+  RE2 and RE3, 14 for RE1. The rest of that Model is the player holding it.
+- Hand the result to a model stage through a `PE_MODEL_CALLBACK` source. The provider owns what it
+  returns; before freeing it, call `pe_model_forget` so the model cache drops its pointer.
+
+The Wardrobe's Weapons view (L2 / R2 on its screen, `pe_wardrobe/pe_wardrobe_weapons.c`) works this
+way. It fits each weapon for `PE_IMP_USE_PROP`, which drops faces outside the texture, then shows the
+weapon part alone. Parasite Eve's own held gun is listed beside the imports; the game draws one model
+for every weapon (`pe_model_decode_held_gun`).

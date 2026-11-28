@@ -1,4 +1,4 @@
-/* RE2/RE3 room logic (mods/host/import/pe_imp_rdt.c).
+/* RE2/RE3 room logic (mods/import/core/pe_imp_rdt.c).
  *   made-up   a room with one script holding a door, a four-point door, an item, a trigger zone and
  *             an enemy, plus two camera switch zones, reads back field for field; a cut-short or
  *             scrambled room is read without leaving its bounds
@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "re_encounter_rooms.h"
 #include "pe_imp.h"
 #include "pe_imp_internal.h"
 #include "pe_imp_logic.h"
@@ -22,6 +23,7 @@ extern const PeImpReader g_re1_item_icons_ps1, g_re2_item_pictures_ps1, g_re3_it
 void MdecDiag_ExpandDecoderTable(void *buffer);   /* the game's, linked in */
 extern const PeImpReader g_re2_objects_ps1, g_re3_objects_ps1, g_re1_objects_ps1, g_re1_file_text_ps1, g_re1_door_models_ps1,
     g_re2_door_models_ps1, g_re3_door_models_ps1, g_re1_room_anims_ps1, g_re1_maps_ps1;
+extern const PeImpReader g_re2_core_bank_ps1, g_re2_core_palette_ps1;
 extern const PeImpReader g_re2_core_effects_ps1, g_re2_effects_ps1, g_re3_effects_ps1, g_re3_core_effects_ps1, g_re1_core_effects_ps1, g_re1_room_effects_ps1;
 extern const PeImpReader g_re3_emd_ps1, g_re3_room_anims_ps1, g_re2_emd_ps1, g_re1_monsters_ps1, g_re1_person_moves_ps1, g_re1_weapon_moves_ps1, g_re1_weapons_ps1, g_re2_player_moves_ps1, g_re2_weapons_ps1, g_re3_player_moves_ps1, g_re3_weapons_ps1;
 extern const PeImpReader g_re1_files_ps1, g_re2_files_ps1, g_re3_files_ps1, g_re2_maps_ps1, g_re3_maps_ps1;
@@ -187,6 +189,175 @@ static void scan_files(const char *label, const char *cue, const char *game, con
     assert(!sc.refused && pictures >= want && decoded == pictures && (want_docs ? docs >= want_docs : !docs));
 }
 
+static void test_movie_timeline(void) {
+    enum { sectors = 12, stride = 2048, frames_per_sector = 252 };
+    uint8_t str[sectors * stride] = {0};
+    uint8_t xa[sectors * PE_IMP_XA_RECORD] = {0};
+    const uint8_t fr[] = {0x60, 1, 1, 0x80, 0, 0, 1, 0, 0, 0, 0, 0, 12, 0, 0, 0, 16, 0, 16, 0};
+    memcpy(str, fr, sizeof fr);
+    memcpy(str + 10 * stride, fr, sizeof fr);
+    str[10 * stride + 8] = 2;   /* the source skipped frame number 1 */
+    const uint8_t stereo[] = {1, 1, 0x24, 1};
+    const uint8_t other[] = {1, 2, 0x24, 1};
+    memcpy(xa + PE_IMP_XA_RECORD, stereo, sizeof stereo);
+    memset(xa + PE_IMP_XA_RECORD + 4 + 16, 0x11, 112);
+    memcpy(xa + 3 * PE_IMP_XA_RECORD, other, sizeof other);
+    memset(xa + 3 * PE_IMP_XA_RECORD + 4 + 16, 0x77, 112);
+    memcpy(xa + 11 * PE_IMP_XA_RECORD, stereo, sizeof stereo);
+    memset(xa + 11 * PE_IMP_XA_RECORD + 4 + 16, 0x22, 112);
+    PeImpMovie *movie = pe_imp_movie_from_indexed_str(str, sizeof str, xa, sizeof xa);
+    assert(movie && movie->frames == 2 && movie->sectors == sectors);
+    assert(movie->frame_sector[0] == 0 && movie->frame_sector[1] == 10);
+    assert(movie->audio_records == 3 && movie->audio_sector[0] == 1 && movie->audio_sector[2] == 11);
+
+    const char *folder = "pe-rdt-test/movie-timeline";
+    assert(!pe_imp_mkdirs(folder));
+    assert(!pe_imp_movie_save(movie, folder, NULL, 0));
+    PeImpMovie *back;
+    assert(!pe_imp_movie_load(folder, &back, NULL, 0));
+    assert(back->frame_sector[1] == 10 && back->audio_sector[1] == 3);
+    assert(back->frame_number[0] == 0 && back->frame_number[1] == 2);
+    PeImpMovieClip clip;
+    assert(pe_imp_movie_clip(back, 0, 0, &clip));
+    uint32_t frames;
+    unsigned rate, channels;
+    int16_t *pcm = pe_imp_movie_pcm(back, &clip, 1, 1, &frames, &rate, &channels);
+    assert(pcm && frames == sectors * frames_per_sector && rate == 37800 && channels == 2);
+    assert(pcm[0] == 0 && pcm[frames_per_sector * 2] == 4096 && pcm[frames_per_sector * 2 + 1] == 4096);
+    assert(pcm[3 * frames_per_sector * 2] == 0 && pcm[10 * frames_per_sector * 2] == 0);
+    assert(pcm[11 * frames_per_sector * 2] == 8192);
+    free(pcm);
+
+    /* Seek past the first frame and XA packet, preserving the initial gap. */
+    assert(pe_imp_movie_clip(back, 8, 2, &clip));
+    assert(clip.first_frame == 1 && clip.end_frame == 2 && clip.start_sector == 8 && clip.end_sector == 12);
+    pcm = pe_imp_movie_pcm(back, &clip, 1, 1, &frames, &rate, &channels);
+    assert(pcm && frames == 4 * frames_per_sector && pcm[0] == 0 && pcm[3 * frames_per_sector * 2] == 8192);
+    free(pcm);
+    assert(pe_imp_movie_clip(back, 0, 1, &clip));
+    assert(clip.end_frame == 2);  /* threshold frame 1 was skipped, so play frame 2 */
+    assert(!pe_imp_movie_clip(back, 11, 2, &clip));
+    assert(!pe_imp_movie_clip(back, 8, 1, &clip));
+
+    back->frame_number[0] = 4;  /* a second sequence starts in the same stream */
+    assert(pe_imp_movie_clip(back, 0, 8, &clip));
+    assert(clip.end_frame == 1 && clip.end_sector == 10);
+    pcm = pe_imp_movie_pcm(back, &clip, 1, 1, &frames, &rate, &channels);
+    assert(pcm && frames == 10 * frames_per_sector && pcm[frames_per_sector * 2] == 4096);
+    free(pcm);
+    pe_imp_movie_free(back);
+
+    /* MOV2 has whole-movie timing but lacks the frame numbers needed for excerpts. */
+    PeImpMovie legacy = *movie;
+    legacy.frame_number = NULL;
+    assert(!pe_imp_movie_save(&legacy, folder, NULL, 0));
+    assert(!pe_imp_movie_load(folder, &back, NULL, 0));
+    assert(!back->frame_number && pe_imp_movie_clip(back, 0, 0, &clip));
+    assert(!pe_imp_movie_clip(back, 8, 2, &clip));
+    pe_imp_movie_free(back);
+
+    /* MOV1 stays readable and its compacted audio has no timeline. */
+    legacy.frame_sector = legacy.audio_sector = NULL;
+    assert(!pe_imp_movie_save(&legacy, folder, NULL, 0));
+    assert(!pe_imp_movie_load(folder, &back, NULL, 0));
+    assert(back->frames == 2 && back->audio_records == 3 && !back->frame_sector && !back->audio_sector);
+    assert(pe_imp_movie_clip(back, 0, 0, &clip));
+    assert(!pe_imp_movie_pcm(back, &clip, 1, 1, &frames, &rate, &channels));
+    pe_imp_movie_free(back);
+    /* The older disc source sorts first. Prefer the copy that supports excerpts. */
+    const char *store = "pe-rdt-test/mixed-movie-store";
+    char sha[65], source[180];
+    memset(sha, 'a', 64);
+    sha[64] = 0;
+    snprintf(source, sizeof source, "%s/re2/%s/0", store, sha);
+    assert(!pe_imp_mkdirs(source));
+    assert(!pe_imp_movie_save(&legacy, source, NULL, 0));
+    snprintf(source, sizeof source, "%s/re2/%s/1", store, sha);
+    assert(!pe_imp_mkdirs(source));
+    assert(!pe_imp_movie_save(movie, source, NULL, 0));
+    FILE *catalog = fopen("pe-rdt-test/mixed-movie-store/re2/catalog.json", "wb");
+    assert(catalog);
+    assert(fprintf(catalog, "{\"re2:movie/mixed\":{\"type\":\"Movie\",\"sources\":["
+                   "{\"sha256\":\"%s\",\"item\":\"0\",\"image\":\"Disc 1\"},"
+                   "{\"sha256\":\"%s\",\"item\":\"1\",\"image\":\"Disc 2\"}]},"
+                   "\"re2:movie/legacy\":{\"type\":\"Movie\",\"sources\":["
+                   "{\"sha256\":\"%s\",\"item\":\"0\"}]}}", sha, sha, sha) > 0);
+    assert(!fclose(catalog));
+    assert(!pe_imp_catalog_movie(store, "re2:movie/mixed", &back, NULL, 0));
+    assert(back->frame_number && pe_imp_movie_clip(back, 8, 2, &clip));
+    pe_imp_movie_free(back);
+    assert(!pe_imp_catalog_movie(store, "re2:movie/legacy", &back, NULL, 0));
+    assert(!back->frame_number && pe_imp_movie_clip(back, 0, 0, &clip));
+    pe_imp_movie_free(back);
+    pe_imp_movie_free(movie);
+}
+
+static void str_dir_record(uint8_t *rec, const char *name, unsigned lba, unsigned size, int directory, int xa) {
+    const unsigned len = (unsigned)strlen(name);
+    const unsigned system_use = 33 + len + !(len & 1);
+    rec[0] = (uint8_t)(system_use + (xa ? 14 : 0));
+    rec[2] = (uint8_t)lba;
+    rec[10] = (uint8_t)size;
+    rec[11] = (uint8_t)(size >> 8);
+    rec[25] = directory ? 2 : 0;
+    rec[32] = (uint8_t)len;
+    memcpy(rec + 33, name, len);
+    if (xa) {
+        rec[system_use + 4] = 0x3d;
+        rec[system_use + 5] = 0x55;
+        memcpy(rec + system_use + 6, "XA", 2);
+    }
+}
+
+static void test_raw_movie_extents(void) {
+    enum { raw = 2352, cooked = 2048, xa_extent = 2336, data = 24, count = 24 };
+    uint8_t image[count][raw] = {{0}};
+    for (unsigned i = 0; i < count; i++) {
+        memset(image[i] + 1, 0xff, 10);
+        image[i][15] = 2;
+    }
+    memcpy(image[16] + data, "\1CD001\1", 7);
+    str_dir_record(image[16] + data + 156, ".", 18, cooked, 1, 0);
+    str_dir_record(image[18] + data, "ZMOVIE", 19, cooked, 1, 0);
+    uint8_t *dir = image[19] + data;
+    /* The first clip uses XA extent units even though it starts with Form 1. */
+    str_dir_record(dir, "FIRST.STR;1", 20, 2 * xa_extent, 0, 1);
+    dir += dir[0];
+    str_dir_record(dir, "SECOND.STR;1", 22, 2 * cooked, 0, 0);
+
+    const uint8_t frame[] = {0x60, 1, 1, 0x80, 0, 0, 1, 0, 0, 0, 0, 0, 12, 0, 0, 0, 16, 0, 16, 0};
+    const uint8_t audio[] = {1, 1, 0x64, 1};
+    memcpy(image[20] + data, frame, sizeof frame);
+    memcpy(image[22] + data, frame, sizeof frame);
+    image[22][18] = 0x62;  /* Form 2 even though this extent uses cooked units. */
+    image[22][data + 8] = 7;
+    memcpy(image[21] + 16, audio, sizeof audio);
+    memcpy(image[23] + 16, audio, sizeof audio);
+
+    const char *path = "pe-rdt-test/adjacent-movies.bin";
+    const char *store = "pe-rdt-test/adjacent-movie-store";
+    assert(!pe_imp_mkdirs("pe-rdt-test"));
+    FILE *disc = fopen(path, "wb");
+    assert(disc);
+    assert(fwrite(image, sizeof image, 1, disc) == 1);
+    assert(!fclose(disc));
+
+    extern const PeImpReader g_re2_movies_ps1;
+    pe_imp_registry_reset();
+    assert(!pe_imp_add_reader(&g_re2_movies_ps1));
+    PeImpScan scan;
+    assert(!pe_imp_scan(store, path, "re2", &scan) && !scan.refused);
+    PeImpMovie *first, *second;
+    assert(!pe_imp_catalog_movie(store, "re2:movie/first", &first, NULL, 0));
+    assert(!pe_imp_catalog_movie(store, "re2:movie/second", &second, NULL, 0));
+    assert(first->sectors == 2 && first->frames == 1 && first->frame_number[0] == 0);
+    assert(second->sectors == 2 && second->frames == 1 && second->frame_number[0] == 7);
+    assert(first->audio_records == 1 && first->audio_sector[0] == 1);
+    assert(second->audio_records == 1 && second->audio_sector[0] == 1);
+    pe_imp_movie_free(first);
+    pe_imp_movie_free(second);
+}
+
 /* one movie: read from the disc, saved and loaded, a frame from its middle decoded
  * (PE_TEST_MOVIE_PPM=<folder> writes that frame as <name>.ppm) */
 static void movie(const char *label, const char *cue, const char *path) {
@@ -197,10 +368,9 @@ static void movie(const char *label, const char *cue, const char *path) {
     assert(i >= 0);
     uint8_t *str, *xa = NULL;
     uint32_t size, xa_size = 0;
-    assert(!pe_imp_disc_read(d, i, &str, &size, why, sizeof why));
-    pe_imp_disc_xa(d, i, &xa, &xa_size, why, sizeof why);
+    assert(!pe_imp_disc_str(d, i, &str, &size, &xa, &xa_size, why, sizeof why));
     pe_imp_disc_close(d);
-    PeImpMovie *m = pe_imp_movie_from_str(str, size, xa, xa_size);
+    PeImpMovie *m = pe_imp_movie_from_indexed_str(str, size, xa, xa_size);
     free(str), free(xa);
     assert(m);
     pe_imp_mkdirs("pe-rdt-test/movie");
@@ -574,10 +744,265 @@ static void disc(const char *label, const char *cue, unsigned game) {
     else assert(bad * 100 < procs);
 }
 
+static void check_room_effects(void) {
+    uint8_t rdt[202] = {0};
+    put32(rdt + 8 + 18 * 4, 100);
+    put32(rdt + 8 + 19 * 4, 144);
+    put32(rdt + 8 + 20 * 4, 148);
+    put32(rdt + 8 + 21 * 4, 202);
+    memset(rdt + 100, 0xff, 8);
+    rdt[100] = 0x0d;
+    put16(rdt + 108, 2);
+    put16(rdt + 110, 1);
+    rdt[117] = 1, rdt[118] = 3, rdt[119] = 24;
+    put16(rdt + 120, -12);
+    rdt[125] = 1, rdt[126] = 0xff;
+    rdt[132] = 16, rdt[133] = 24, rdt[134] = 244, rdt[135] = 248;
+    put32(rdt + 144, 8);
+    put32(rdt + 148, 0x10);
+    put32(rdt + 152, 2);
+    put32(rdt + 156, 14);
+    put16(rdt + 164, 1);
+    put16(rdt + 166, 1);
+
+    PeImpRe2RoomEffect effect;
+    PeImpRe2EffectFrame frame;
+    PeImpRe2EffectSprite sprite;
+    assert(!pe_imp_re2_room_effect(rdt, sizeof rdt, 0x0d, &effect));
+    assert(effect.frame_count == 2 && effect.sprite_count == 1 && effect.tim_size == 22);
+    assert(!pe_imp_re2_effect_frame(&effect, 0, &frame));
+    assert(frame.time == 3 && frame.size == 24 && frame.origin_x == -12);
+    assert(!pe_imp_re2_effect_frame(&effect, 1, &frame) && frame.time == 0xff);
+    assert(pe_imp_re2_effect_frame(&effect, 2, &frame) == -1);
+    assert(!pe_imp_re2_effect_sprite(&effect, 0, &sprite));
+    assert(sprite.u == 16 && sprite.v == 24 && sprite.x == -12 && sprite.y == -8);
+    rdt[117] = 2;
+    assert(pe_imp_re2_effect_frame(&effect, 0, &frame) == -1);
+    assert(pe_imp_re2_room_effect(rdt, sizeof rdt, 0x0e, &effect) == -1);
+    assert(pe_imp_re2_room_effect(rdt, 190, 0x0d, &effect) == -1);
+    put32(rdt + 144, 0x7fffffff);
+    assert(pe_imp_re2_room_effect(rdt, sizeof rdt, 0x0d, &effect) == -1);
+}
+
+static void check_opening_effects(const char *store) {
+    const char *const rooms[] = {"re2:logic/100-0", "re2:logic/100-1"};
+    const unsigned effects[] = {0x0d, 0x0e};
+    for (unsigned i = 0; i < 2; i++) {
+        PeImpRoomLogic *room = NULL;
+        char why[200];
+        assert(!pe_imp_catalog_roomlogic(store, rooms[i], &room, why, sizeof why));
+        uint32_t size;
+        const uint8_t *rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &size);
+        for (unsigned j = 0; j < 2; j++) {
+            PeImpRe2RoomEffect effect;
+            assert(!pe_imp_re2_room_effect(rdt, size, effects[j], &effect));
+            unsigned width, height, drawable = 0;
+            uint8_t *rgba = pe_imp_tim_decode(effect.tim, effect.tim_size, &width, &height);
+            assert(rgba && width && height);
+            for (unsigned k = 0; k < effect.frame_count; k++) {
+                PeImpRe2EffectFrame frame;
+                assert(!pe_imp_re2_effect_frame(&effect, k, &frame));
+                if (!frame.time || frame.time == 0xff) continue;
+                drawable++;
+                for (unsigned n = 0; n < frame.sprite_count; n++) {
+                    PeImpRe2EffectSprite sprite;
+                    assert(!pe_imp_re2_effect_sprite(&effect, frame.first_sprite + n, &sprite));
+                    assert(sprite.u < width && sprite.v < height);
+                }
+            }
+            assert(drawable > 1);
+            printf("%s effect %02x: %u drawable frames, %ux%u TIM\n", rooms[i], effects[j], drawable, width, height);
+            free(rgba);
+        }
+        free(room);
+    }
+}
+
+typedef struct {
+    const uint8_t *rdt;
+    uint32_t size;
+    const char *room;
+    unsigned *counts;
+} EffectAudit;
+
+static void audit_effect(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
+    (void)proc;
+    (void)size;
+    EffectAudit *audit = ctx;
+    const unsigned opcode = ins[0];
+    const char *gap = NULL;
+    switch (opcode) {
+    case 0x3a: case 0x64: {
+        PeImpRe2RoomEffect effect;
+        if (ins[4] > 4) gap = "attachment matrix";
+        else if (pe_imp_re2_room_effect(audit->rdt, audit->size, ins[2], &effect)) gap = "no local effect data";
+        else if (effect.tim[4] != 8) gap = "texture format";
+        else if (ins[3] & 7) gap = "effect-specific behavior";
+        break;
+    }
+    case 0x4c: case 0x65: break;
+    case 0x52: gap = "effect control"; break;
+    case 0x54: case 0x75: gap = "two-point 3D effect"; break;
+    case 0x82: gap = "effect task"; break;
+    default: return;
+    }
+    audit->counts[opcode]++;
+    if (gap) printf("%s +0x%x opcode %02x: %s\n", audit->room, at, opcode, gap);
+}
+
+static void audit_room_effects(const char *store) {
+    PeImpAsset *assets = NULL;
+    const int n = pe_imp_catalog_assets(store, "re2", &assets);
+    assert(n > 0);
+    unsigned counts[256] = {0}, rooms = 0;
+    for (int i = 0; i < n; i++) {
+        if (strncmp(assets[i].id, "re2:logic/", 10)) continue;
+        PeImpRoomLogic *room = NULL;
+        char why[200];
+        if (pe_imp_catalog_roomlogic(store, assets[i].id, &room, why, sizeof why)) {
+            printf("%s: %s\n", assets[i].id, why);
+            continue;
+        }
+        EffectAudit audit = {.room = assets[i].id, .counts = counts};
+        audit.rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &audit.size);
+        uint32_t unreadable = 0;
+        if (pe_imp_scd_walk(PE_IMP_RE2, audit.rdt, audit.size, audit_effect, &audit, &unreadable) < 0 || unreadable)
+            printf("%s: incomplete script scan\n", assets[i].id);
+        rooms++;
+        free(room);
+    }
+    free(assets);
+    printf("Room-effect audit: %u imported room scripts\n", rooms);
+    for (unsigned op = 0; op < 256; op++)
+        if (counts[op]) printf("  opcode %02x: %u cues\n", op, counts[op]);
+    assert(rooms);
+}
+
+typedef struct {
+    unsigned placements[256][64], commands[256];
+    uint32_t proc;
+    int enemy_selected;
+} EnemyAudit;
+
+static void audit_enemy_placement(void *ctx, uint32_t proc, uint32_t at, const uint8_t *ins, uint32_t size) {
+    (void)at;
+    EnemyAudit *audit = ctx;
+    if (proc != audit->proc) {
+        audit->proc = proc;
+        audit->enemy_selected = 0;
+    }
+    const unsigned opcode = ins[0];
+    if (opcode == 0x44 && size == 22) audit->placements[ins[3]][ins[4] & 0x3f]++;
+    if (opcode == 0x2e && size >= 3) audit->enemy_selected = ins[1] == 3;
+    /* Actor commands under a local WORK_SET, plus dedicated enemy commands.
+     * Static scan only. It does not follow branches or inherited work from callers. */
+    if (((opcode == 0x3f || opcode == 0x41 || opcode == 0x43) && audit->enemy_selected) ||
+        opcode == 0x85 || opcode == 0x8e) audit->commands[opcode]++;
+}
+
+static void audit_room_enemies(const char *store) {
+    static EnemyAudit audit;
+    PeImpAsset *assets = NULL;
+    const int n = pe_imp_catalog_assets(store, "re2", &assets);
+    assert(n > 0);
+    unsigned rooms = 0, total = 0, missing = 0;
+    for (int i = 0; i < n; i++) {
+        if (strncmp(assets[i].id, "re2:logic/", 10)) continue;
+        PeImpRoomLogic *room = NULL;
+        char why[200];
+        if (pe_imp_catalog_roomlogic(store, assets[i].id, &room, why, sizeof why)) {
+            printf("%s: %s\n", assets[i].id, why);
+            continue;
+        }
+        uint32_t size = 0, unreadable = 0;
+        const uint8_t *rdt = pe_imp_logic_section(room, PE_IMP_LOGIC_RDT0, NULL, &size);
+        audit.proc = UINT32_MAX;
+        if (pe_imp_scd_walk(PE_IMP_RE2, rdt, size, audit_enemy_placement, &audit, &unreadable) < 0 || unreadable)
+            printf("%s: incomplete script scan\n", assets[i].id);
+        rooms++;
+        free(room);
+    }
+    free(assets);
+    for (unsigned kind = 0; kind < 256; kind++) {
+        const int pursuit_family = pe_re2_ground_pursuit_kind(kind);
+        for (unsigned type = 0; type < 64; type++) {
+            const unsigned count = audit.placements[kind][type];
+            if (!count) continue;
+            total += count;
+            if (!pursuit_family) missing += count;
+            printf("EM%02X type %02X: %u placements%s\n", kind, type, count,
+                   pursuit_family ? "" : " (no field pursuit handler)");
+        }
+    }
+    printf("Enemy audit: %u imported room scripts, %u placement cues, %u outside pursuit families\n",
+           rooms, total, missing);
+    for (unsigned opcode = 0; opcode < 256; opcode++)
+        if (audit.commands[opcode]) printf("  unhandled enemy opcode %02X: %u static cues\n", opcode, audit.commands[opcode]);
+    assert(rooms && total);
+}
+
+static void check_core_effects(const char *cue) {
+    static const char *const paths[] = {
+        "COMMON/DATA/CORE00.ESP", "COMMON/DATA/CORE01.TIM", "COMMON/DATA/TEX.TIM"
+    };
+    char why[160];
+    PeImpDisc *disc = pe_imp_disc_open(cue, why, sizeof why);
+    assert(disc != NULL);
+    if (!disc) return;
+    uint8_t *data[3] = {0};
+    uint32_t bytes[3] = {0};
+    for (int i = 0; i < 3; i++) {
+        const int index = pe_imp_disc_find(disc, paths[i]);
+        assert(index >= 0 && !pe_imp_disc_read(disc, index, &data[i], &bytes[i], why, sizeof why));
+    }
+    static const char store[] = "pe-rdt-test/core-effects";
+    PeImpScan scan;
+    PeImpRoomLogic *bank = NULL, *palettes = NULL;
+    pe_imp_registry_reset();
+    assert(!pe_imp_add_reader(&g_re2_core_bank_ps1));
+    assert(!pe_imp_add_reader(&g_re2_core_palette_ps1));
+    assert(!pe_imp_scan(store, cue, "re2", &scan) && !scan.refused);
+    assert(!pe_imp_catalog_pictures(store, "re2:effects/core-bank", &bank, why, sizeof why));
+    assert(!pe_imp_catalog_pictures(store, "re2:effects/core-palette", &palettes, why, sizeof why));
+
+    for (unsigned id = 0; id < 8; id++) {
+        PeImpRe2CoreEffect effect, stored;
+        assert(!pe_imp_re2_core_effect(data[0], bytes[0], data[1], bytes[1], data[2], bytes[2], id, 0, &effect));
+        assert(!pe_imp_re2_core_bank_effect(bank, palettes, id, 0, &stored));
+        assert(stored.sequence.frame_count == effect.sequence.frame_count);
+        assert(!memcmp(stored.palette, effect.palette, 32));
+        assert(!memcmp(stored.page, effect.page, 128));
+        PeImpRe2EffectFrame frame;
+        PeImpRe2EffectSprite sprite;
+        assert(!pe_imp_re2_effect_frame(&effect.sequence, 0, &frame) && frame.time > 0);
+        assert(!pe_imp_re2_effect_sprite(&effect.sequence, 0, &sprite));
+        assert(effect.page == data[1] || effect.page == data[1] + 128);
+        int has_colour = 0;
+        for (int i = 0; i < 32; i++) has_colour |= effect.palette[i];
+        assert(has_colour);
+    }
+    PeImpRe2CoreEffect missing;
+    assert(pe_imp_re2_core_effect(data[0], bytes[0], data[1], bytes[1], data[2], bytes[2], 8, 0, &missing) < 0);
+    free(bank);
+    free(palettes);
+    for (int i = 0; i < 3; i++) free(data[i]);
+    pe_imp_disc_close(disc);
+}
+
 int main(void) {
+    test_movie_timeline();
+    test_raw_movie_extents();
     setvbuf(stdout, NULL, _IONBF, 0);
     made_up();
+    check_room_effects();
+    const char *store = getenv("PE_TEST_RE2_STORE");
+    if (store && *store) {
+        check_opening_effects(store);
+        if (getenv("PE_TEST_RE2_EFFECT_AUDIT")) audit_room_effects(store);
+        if (getenv("PE_TEST_RE2_ENEMY_AUDIT")) audit_room_enemies(store);
+    }
     const char *re1 = getenv("PE_TEST_RE1_DISC"), *re2 = getenv("PE_TEST_RE2_DISC"), *re3 = getenv("PE_TEST_RE3_DISC");
+    if (re2 && *re2) check_core_effects(re2);
     if (re1 && *re1) disc("RE1", re1, PE_IMP_RE1), scan_doors("RE1", re1, "re1", &g_re1_door_ps1, 0),
                      scan_items("RE1", re1, "re1", &g_re1_items_ps1, 2, "Beretta", 76),
                      movie("RE1", re1, "PSXUSA/ZMOVIE/OJ.STR"),

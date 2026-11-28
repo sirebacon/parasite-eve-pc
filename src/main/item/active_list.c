@@ -1220,7 +1220,12 @@ int Inv_WriteSlotById(ItemDataRecord *item) {
     } else {
         category = kind - 16;
     }
-    if ((unsigned)category < 3) {
+    {   /* a mod's ammo scheme may use one of the other pool records (up to 8) */
+        const int native = category;
+        const int chosen = Inv_AmmoPoolIndex(item, native);
+        category = chosen == native ? ((unsigned)native < 3 ? native : -1) : chosen;
+    }
+    if ((unsigned)category < 9) {
         ItemDataRecord *pool;
         if (FindActiveSlot(category + 512) < 0) {
             int slot = FindFreeActiveSlot();
@@ -1420,12 +1425,14 @@ void Inv_SetAyaSlotCount(int count) {
     }
 }
 
+int g_InvOverflowSlotCount;
+
 int Inv_GetAyaSlotLimit(void) {
-    if (g_AyaSaveState.inventory_slot_count + Inv_GetBonusSlotCount() >= 0x33) {
+    if (g_AyaSaveState.inventory_slot_count + Inv_GetBonusSlotCount() + g_InvOverflowSlotCount >= 0x33) {
         return 0x32;
     }
 
-    return g_AyaSaveState.inventory_slot_count + Inv_GetBonusSlotCount();
+    return g_AyaSaveState.inventory_slot_count + Inv_GetBonusSlotCount() + g_InvOverflowSlotCount;
 }
 
 /* Original USA data at 0x800923D8. */

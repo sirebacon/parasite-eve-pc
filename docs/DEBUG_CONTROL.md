@@ -86,6 +86,7 @@ A game whose window pauses when unfocused answers once it runs again.
 | `events` | `ok events <seq>`: the sequence number of the last event written to `events.jsonl` (see below); read lines after it |
 | `snapshot [NAME]` | write `snapshot[-NAME].json` in the control folder: room, ui-state, battle-state, bag, actors (position, yaw, flags), every running mod's live state and the last 32 commands and answers. Answers `ok snapshot <file>` |
 | `ini-set PAGE/LABEL VALUE` | change a registered stored option in memory using its full INI key (spaces allowed). Range checked (a list a mod fills, against its current length). Does not persist to disk. `restart_required=1` for Manage mods options: apply those in the next session's INI; this command does not start/stop mods |
+| `mod-set PAGE/LABEL VALUE` | set a live integer in an active mod using the same range and setter as F1 |
 | `mod-action PAGE/LABEL` | run a registered F1 action row, as Enter on it does; refused for a mod that is off |
 | `trace on` / `trace off` | append events to `battle.jsonl` in the control folder; off initially |
 

@@ -10,7 +10,8 @@
  * TIM and the EMD. In the main archive's table (CDEMD0 on disc 1, CDEMD1 on disc 2) record k is
  * enemy 0x10 + k: lined up with biohazard-utils' Bio2ConstantTable g_enemyNames, every record's bone
  * count fits its name (15-bone zombies and people, the 17-bone dog, 22-bone lickers). Those become
- * "enemy/em<nn>". The other archives' tables start at 0x10 too (bone counts agree with the main
+ * "enemy/em<nn>", with archive-specific aliases for use when a campaign selects its own archive.
+ * The other archives' tables start at 0x10 too (bone counts agree with the main
  * archive's same-numbered enemies on both discs): "enemy/em<nn>-cdemd2" and so on. Read only. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,7 +123,7 @@ static int read_ems(const uint8_t *data, uint32_t size, const uint8_t *exe, uint
         have_tim = 0;                                                   /* each TIM goes with the EMD after it */
         PeImpModel *m = calloc(1, sizeof *m);
         if (!m) { snprintf(why, n, "out of memory"); return -1; }
-        char quiet[160], id[40], mid[48], name[48];
+        char quiet[160], id[40], mid[PE_IMP_ID_MAX], name[48], alias[48] = "";
         if (re2_skeleton_mesh(data, size, sec[2], sec[7], tim, m, quiet, sizeof quiet)) { free(m); continue; }
         PeImpAnimation *a = moves(data, size, sec, m->bones);
         uint32_t em = 0;
@@ -131,6 +132,7 @@ static int read_ems(const uint8_t *data, uint32_t size, const uint8_t *exe, uint
         if (em && main_archive) {
             snprintf(id, sizeof id, "enemy/em%02x", em);
             snprintf(name, sizeof name, "EM%02X", em);
+            snprintf(alias, sizeof alias, "%s-%s", id, stem);
         } else if (em) {                                                /* another archive's version of it */
             snprintf(id, sizeof id, "enemy/em%02x-%s", em, stem);
             snprintf(name, sizeof name, "EM%02X (%s)", em, stem);
@@ -144,10 +146,19 @@ static int read_ems(const uint8_t *data, uint32_t size, const uint8_t *exe, uint
             snprintf(why, n, "could not catalog %s", id);
             return -1;
         }
+        if (alias[0] && pe_imp_emit_alias(sink, alias, name)) {
+            if (a) pe_imp_animation_free(a), free(a);
+            snprintf(why, n, "could not catalog %s", alias);
+            return -1;
+        }
         if (!a) continue;
         snprintf(mid, sizeof mid, "%s/moves", id);
         strncat(name, " moves", sizeof name - strlen(name) - 1);
         if (pe_imp_emit(sink, PE_IMP_ANIMATION, mid, name, a)) { snprintf(why, n, "could not catalog %s", mid); return -1; }
+        if (alias[0]) {
+            snprintf(mid, sizeof mid, "%s/moves", alias);
+            if (pe_imp_emit_alias(sink, mid, name)) { snprintf(why, n, "could not catalog %s", mid); return -1; }
+        }
     }
     return 0;
 }
@@ -155,7 +166,7 @@ static int read_ems(const uint8_t *data, uint32_t size, const uint8_t *exe, uint
 const PeImpReader g_re2_emd_ps1 = {
     .api = {PE_IMP_API_VERSION, sizeof(PeImpReader)},
     .game = "re2", .platform = "ps1", .format = "ems",
-    .version = 3, .produces = PE_IMP_MODEL | PE_IMP_ANIMATION, .match = "PL?/PLD/CDEMD?.EMS",
+    .version = 4, .produces = PE_IMP_MODEL | PE_IMP_ANIMATION, .match = "PL?/PLD/CDEMD?.EMS",
     .tags = "enemy", .read_pair = read_ems, .find_companion = find_exe
 };
 
@@ -221,6 +232,35 @@ static int find_pld(PeImpDisc *d, const char *path) {
  * the model's). A PLW's are the player's moves with that weapon (aim, fire, reload), and the weapon
  * Model "weapon/pl00w02" is the player PLxx.PLD holding it: part 11 swapped for the PLW's first part,
  * the PLW's picture in the texture (above). Its moves play on it as they are. */
+/* Weapon names: the item table's (pe_src_re2_items.c), whose numbers the PLW files use (PL00W00 to
+ * W12 are items 0 to 0x12, as BioRand's per-weapon tables line up); 0 is the bare hand. */
+static const char *const k_weapon[] = {
+    "No weapon", "Knife", "Handgun Leon", "Handgun Claire", "Custom Handgun", "Magnum", "Custom Magnum",
+    "Shotgun", "Custom Shotgun", "Grenade Launcher", "Grenade Launcher Flame", "Grenade Launcher Acid",
+    "Bowgun", "Colt SAA", "Sparkshot", "SMG", "Flamethrower", "Rocket Launcher", "Gatling Gun"};
+static const struct { unsigned pl; const char *who; } k_who[] = {
+    {0x00, "Leon"}, {0x01, "Claire"}, {0x08, "Tank Top Leon"}, {0x09, "Flame Jacket Claire"},
+    {0x0A, "Leather Jacket Leon"}, {0x0C, "HUNK"}, {0x0D, "Tofu"}, {0x0E, "Ada"}, {0x0F, "Sherry"}};
+
+/* "PLxxWyy" -> "<weapon> (<who>)": yy is the weapon's item number, xx the player
+ * (as the naming table names them); numbers past the tables keep their hex. */
+static void weapon_name(const char *stem, char *out, size_t n) {
+    char hex[3] = {0};
+    unsigned pl = 0xFFu, w = 0xFFu;
+    if (strlen(stem) == 7) {
+        hex[0] = stem[2], hex[1] = stem[3], pl = (unsigned)strtoul(hex, NULL, 16);
+        hex[0] = stem[5], hex[1] = stem[6], w = (unsigned)strtoul(hex, NULL, 16);
+    }
+    const char *who = NULL;
+    for (size_t i = 0; i < sizeof k_who / sizeof k_who[0]; i++) if (k_who[i].pl == pl) who = k_who[i].who;
+    char weapon[32], person[24];
+    if (w < sizeof k_weapon / sizeof k_weapon[0]) snprintf(weapon, sizeof weapon, "%s", k_weapon[w]);
+    else snprintf(weapon, sizeof weapon, "Weapon %02X", w);
+    if (who) snprintf(person, sizeof person, "%s", who);
+    else snprintf(person, sizeof person, "PL%02X", pl);
+    snprintf(out, n, "%s (%s)", weapon, person);
+}
+
 static int emit_weapon(const uint8_t *data, uint32_t size, const uint8_t *pld, uint32_t pld_size, const char *path,
                        PeImpSink *sink, char *why, size_t n) {
     const char *base = strrchr(path, '/');
@@ -245,7 +285,7 @@ static int emit_weapon(const uint8_t *data, uint32_t size, const uint8_t *pld, u
             swap_hand(m, 11, w);
             pe_imp_model_free(w), free(w), w = NULL;
             snprintf(id, sizeof id, "weapon/%s", low);
-            snprintf(name, sizeof name, "%s", stem);
+            weapon_name(stem, name, sizeof name);
             if (pe_imp_emit(sink, PE_IMP_MODEL, id, name, m)) {
                 if (a) pe_imp_animation_free(a), free(a);
                 snprintf(why, n, "could not catalog %s", id);
@@ -282,6 +322,6 @@ const PeImpReader g_re2_player_moves_ps1 = {
 const PeImpReader g_re2_weapons_ps1 = {
     .api = {PE_IMP_API_VERSION, sizeof(PeImpReader)},
     .game = "re2", .platform = "ps1", .format = "plw",
-    .version = 2, .produces = PE_IMP_MODEL | PE_IMP_ANIMATION, .match = "PL?/PLD/PL??W??.PLW",
+    .version = 3, .produces = PE_IMP_MODEL | PE_IMP_ANIMATION, .match = "PL?/PLD/PL??W??.PLW",   /* 3: named */
     .tags = "weapon", .read_pair = read_weapon, .find_companion = find_pld
 };
